@@ -44,65 +44,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# [CSS OVERRIDES] - UPDATED FOR DARK MODE FIXES
-st.markdown("""
-<style>
-    /* 1. FORCE DARK THEME BACKGROUNDS */
-    .stApp {
-        background-color: #0E1117;
-        color: #FAFAFA;
-    }
-    .stTextInput > label, .stSelectbox > label, .stTextArea > label {
-        color: #FAFAFA !important;
-    }
-    
-    /* 2. FIX TABS (Make inactive text lighter so it's visible) */
-    button[data-baseweb="tab"] {
-        color: #a0a0a0 !important; /* Light Gray for inactive */
-        font-weight: 600;
-    }
-    button[data-baseweb="tab"][aria-selected="true"] {
-        color: #ffffff !important; /* White for active */
-        border-bottom-color: #ff4b4b !important;
-    }
-
-    /* 3. FIX BUTTONS (Prevent black text on dark background) */
-    .stButton > button {
-        color: #ffffff !important;
-        border: 1px solid #4a4a4a !important;
-        background-color: #262730 !important;
-        border-radius: 8px; 
-        font-weight: bold; 
-    }
-    .stButton > button:hover {
-        border-color: #ff4b4b !important;
-        color: #ff4b4b !important;
-    }
-    
-    /* WIDER SIDEBAR */
-    [data-testid="stSidebar"] {
-        min-width: 400px;
-        max-width: 500px;
-    }
-    
-    /* Hide Streamlit Header */
-    header {visibility: hidden;}
-    
-    /* Content Padding */
-    .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
-    }
-    
-    /* ZIS Title Styling */
-    h1 {
-        color: #FFB100; 
-        font-family: 'Helvetica', sans-serif;
-        margin-top: -1rem;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 # Initialize Session State
 if "flow_json" not in st.session_state:
     st.session_state["flow_json"] = {"StartAt": "StartStep", "States": {"StartStep": {"Type": "Pass", "End": True}}}
@@ -222,9 +163,11 @@ def render_flow_graph(flow_def, highlight_path=None):
     try:
         dot = graphviz.Digraph(comment='ZIS Flow')
         dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
-        # Force white nodes with black text for contrast in dark mode
-        dot.attr('node', shape='box', style='rounded,filled', fillcolor='white', fontcolor='black', fontname='Arial', fontsize='12')
-        dot.attr('edge', color='#dddddd') # Light grey lines for visibility
+        
+        # Use simple colors that work in both Light and Dark mode
+        # Nodes: White/Light Gray fill, Black text
+        dot.attr('node', shape='box', style='rounded,filled', fillcolor='#f0f0f0', fontcolor='black', fontname='Arial', fontsize='12')
+        dot.attr('edge', color='#888888') 
         
         visited = set(highlight_path) if highlight_path else set()
         start = flow_def.get("StartAt")
@@ -232,12 +175,12 @@ def render_flow_graph(flow_def, highlight_path=None):
         if start: dot.edge("START", start)
 
         for k, v in flow_def.get("States", {}).items():
-            fill = "white"
+            fill = "#f0f0f0"
             pen = "1"
             if k in visited:
-                fill = "#C8E6C9"
+                fill = "#C8E6C9" # Light Green
                 pen = "2"
-                if highlight_path and k == highlight_path[-1]: fill = "#81C784"
+                if highlight_path and k == highlight_path[-1]: fill = "#81C784" # Darker Green
             
             dot.node(k, f"{k}\n({v.get('Type')})", fillcolor=fill, penwidth=pen)
             
@@ -364,18 +307,7 @@ with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
         btn_settings = [{"name": "Save", "feather": "Save", "primary": True, "hasText": True, "alwaysOn": True, "commands": ["submit"]}]
-        
-        # --- DARK MODE EDITOR FIX ---
-        resp = code_editor(
-            st.session_state.get("editor_content", ""), 
-            lang="json", 
-            height=500, 
-            buttons=btn_settings, 
-            key=dynamic_key,
-            options={"theme": "monokai"} # <--- FORCES DARK EDITOR THEME
-        )
-        # ----------------------------
-
+        resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, buttons=btn_settings, key=dynamic_key)
         if resp['type'] == "submit":
             try:
                 js = json.loads(resp['text'])
