@@ -38,12 +38,13 @@ def clean_flow_logic(flow_data):
 # 1. THEME & CONFIG
 # ==========================================
 st.set_page_config(
-    page_title="ZIS Studio Beta", 
+    page_title="ZIS Studio", 
     layout="wide", 
     page_icon="⚡",
     initial_sidebar_state="expanded"
 )
 
+# Custom CSS for compact layout
 st.markdown("""
 <style>
     header {visibility: hidden;}
@@ -246,13 +247,14 @@ t_imp, t_code, t_vis, t_dep, t_deb = st.tabs([
     "🐞 Debugger"
 ])
 
-# --- TAB 1: IMPORT ---
+# --- TAB 1: IMPORT (STACKED) ---
 with t_imp:
     st.markdown("### 🔎 Find Existing Flows")
     
     if not st.session_state.get("is_connected"):
         st.info("👈 Please connect your Zendesk account in the sidebar.")
     else:
+        # 1. Action Button
         if st.button("🚀 Start Deep Scan", type="primary"):
             results = []
             progress_bar = st.progress(0)
@@ -284,24 +286,28 @@ with t_imp:
                     st.session_state["scan_results"] = results
                     status_text.empty()
                     progress_bar.empty()
+                    
                     if not results: st.warning("Scan complete. No bundles found.")
+                    else: st.success(f"✅ Scan Complete. Found {len(results)} bundles.")
                     
                 else: st.error("Failed to fetch integrations.")
             except Exception as e: st.error(str(e))
 
-        if "scan_results" in st.session_state:
+        # 2. Results (Stacked Below)
+        if "scan_results" in st.session_state and st.session_state["scan_results"]:
             res = st.session_state["scan_results"]
             st.divider()
-            st.metric("Flows Found", len(res))
             
-            if res:
-                with st.container(border=True):
-                    sel_idx = st.selectbox("Select Flow to Load", range(len(res)), format_func=lambda i: f"{res[i]['int']} / {res[i]['bun']}")
+            with st.container(border=True):
+                st.subheader("Select a Flow to Load")
+                sel_idx = st.selectbox("Available Flows", range(len(res)), format_func=lambda i: f"{res[i]['int']} / {res[i]['bun']}")
+                
+                if st.button("Load Flow", key="btn_load_final"):
+                    item = res[sel_idx]
+                    # UUID priority for reliable fetch
+                    url = f"{get_base_url()}/{item['int']}/bundles/{item['uuid'] or item['bun']}"
                     
-                    if st.button("Load Flow", key="btn_load_final"):
-                        item = res[sel_idx]
-                        url = f"{get_base_url()}/{item['int']}/bundles/{item['uuid'] or item['bun']}"
-                        
+                    with st.spinner("Downloading code..."):
                         r = requests.get(url, auth=get_auth())
                         if r.status_code == 200:
                             found = False
@@ -310,20 +316,21 @@ with t_imp:
                                     st.session_state["flow_json"] = clean_flow_logic(v["properties"]["definition"])
                                     st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
                                     st.session_state["current_bundle_name"] = item['bun']
-                                    st.session_state["editor_key"] += 1
-                                    st.toast("Flow Loaded!", icon="🎉")
+                                    st.session_state["editor_key"] += 1 # Force Editor Refresh
+                                    st.toast("Flow Loaded Successfully!", icon="🎉")
                                     found = True
                                     time.sleep(0.5); safe_rerun()
                                     break
-                            if not found: st.warning("No Flow resource found.")
-                        else: st.error("Fetch failed.")
+                            if not found: st.warning("No Flow resource found in this bundle.")
+                        else: st.error("Fetch failed. Please check permissions.")
 
-# --- TAB 2: CODE ---
+# --- TAB 2: CODE (SMALLER) ---
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
         btn_settings = [{"name": "Save", "feather": "Save", "primary": True, "hasText": True, "alwaysOn": True, "commands": ["submit"]}]
-        resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, buttons=btn_settings, key=dynamic_key)
+        # [FIX] Height reduced to 400px
+        resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=400, buttons=btn_settings, key=dynamic_key)
         if resp['type'] == "submit":
             try:
                 js = json.loads(resp['text'])
@@ -332,7 +339,8 @@ with t_code:
                 st.toast("Code Saved", icon="💾"); time.sleep(0.2); safe_rerun()
             except: st.error("Invalid JSON")
     else:
-        txt = st.text_area("JSON", st.session_state.get("editor_content", ""), height=500, key=dynamic_key)
+        # Fallback text area also smaller
+        txt = st.text_area("JSON", st.session_state.get("editor_content", ""), height=400, key=dynamic_key)
         if st.button("Save", key="save_text"):
             try:
                 js = json.loads(txt)
@@ -495,34 +503,22 @@ with t_dep:
                     except Exception as e: st.error(str(e))
 
 # --- TAB 5: DEBUG ---
-# [FIX] Debug Layout: Input/Logs Left | Graph Right
 with t_deb:
-    col_left, col_right = st.columns([1, 1])
-    
-    with col_left:
-        st.subheader("Simulate & Test")
-        inp = st.text_area("JSON Input", '{"ticket": {"id": 123}}', height=200)
-        
+    col_in, col_out = st.columns([1, 1])
+    with col_in:
+        st.subheader("Input")
+        inp = st.text_area("JSON Input", '{"ticket": {"id": 123}}', height=300)
         if st.button("▶️ Run Simulation", type="primary"):
-            try:
-                eng = ZISFlowEngine(st.session_state["flow_json"], json.loads(inp), {}, {})
-                logs, ctx, path = eng.run()
-                st.session_state["debug_res"] = (logs, ctx, path)
-            except Exception as e: st.error(f"Error: {e}")
-
-        # LOGS BELOW INPUT
+            eng = ZISFlowEngine(st.session_state["flow_json"], json.loads(inp), {}, {})
+            logs, ctx, path = eng.run()
+            st.session_state["debug_res"] = (logs, ctx, path)
+    
+    with col_out:
+        st.subheader("Output")
         if "debug_res" in st.session_state:
             logs, ctx, path = st.session_state["debug_res"]
-            st.divider()
-            with st.expander("📜 Logs", expanded=True):
+            with st.expander("Logs", expanded=True):
                 for l in logs: st.text(l)
-            with st.expander("📦 Context Output"):
-                st.json(ctx)
-
-    with col_right:
-        st.subheader("Visual Trace")
-        if "debug_res" in st.session_state:
-            _, _, path = st.session_state["debug_res"]
+            with st.expander("Context"): st.json(ctx)
+            st.caption("Visual Trace:")
             render_flow_graph(st.session_state["flow_json"], path)
-        else:
-            render_flow_graph(st.session_state["flow_json"])
