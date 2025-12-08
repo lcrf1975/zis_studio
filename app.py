@@ -9,29 +9,24 @@ from jsonpath_ng import parse
 # ==========================================
 # 0. SYSTEM SETUP
 # ==========================================
-
-# 1. Graphviz Check
 try:
     import graphviz
     HAS_GRAPHVIZ = True
 except ImportError:
     HAS_GRAPHVIZ = False
 
-# 2. Code Editor Check
 try:
     from code_editor import code_editor
     HAS_EDITOR = True
 except ImportError:
     HAS_EDITOR = False
 
-# 3. Rerun Helper
 def safe_rerun():
     try:
         if hasattr(st, "rerun"): st.rerun()
         elif hasattr(st, "experimental_rerun"): st.experimental_rerun()
     except: pass
 
-# 4. Sanitizer
 def clean_flow_logic(flow_data):
     clean = flow_data.copy()
     forbidden_keys = ["zis_template_version", "resources", "name", "description", "type", "properties"]
@@ -40,7 +35,47 @@ def clean_flow_logic(flow_data):
     return clean
 
 # ==========================================
-# 1. EMBEDDED ENGINE
+# 1. THEME & CONFIG
+# ==========================================
+st.set_page_config(
+    page_title="ZIS Studio Beta", 
+    layout="wide", 
+    page_icon="⚡",
+    initial_sidebar_state="expanded"
+)
+
+st.markdown("""
+<style>
+    header {visibility: hidden;}
+    .block-container {
+        padding-top: 1rem;
+        padding-bottom: 2rem;
+    }
+    h1 {
+        color: #FFB100; 
+        font-family: 'Helvetica', sans-serif;
+        margin-top: -3rem;
+    }
+    .stButton>button {
+        border-radius: 8px; 
+        font-weight: bold; 
+        border: none;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Initialize Session State
+if "flow_json" not in st.session_state:
+    st.session_state["flow_json"] = {"StartAt": "StartStep", "States": {"StartStep": {"Type": "Pass", "End": True}}}
+if "editor_key" not in st.session_state: st.session_state["editor_key"] = 0 
+if "editor_content" not in st.session_state:
+    st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+
+for key in ["zd_subdomain", "zd_email", "zd_token"]:
+    if key not in st.session_state: st.session_state[key] = ""
+
+# ==========================================
+# 2. LOGIC ENGINE
 # ==========================================
 class ZISFlowEngine:
     def __init__(self, flow_definition, input_data, connections, configs):
@@ -81,7 +116,6 @@ class ZISFlowEngine:
             params[key] = val
 
         self.log(state_name, f"Action: {action_name}", "RUNNING")
-        
         url = params.get("url", "")
         method = params.get("method", "GET")
         
@@ -101,417 +135,394 @@ class ZISFlowEngine:
         flow_def = self.flow.get("definition", self.flow)
         curr = flow_def.get("StartAt")
         states = flow_def.get("States", {})
-        
         self.log("START", f"Flow: {self.context.get('flow_name', 'Local')}")
         steps = 0
-        
         while curr and steps < 50:
             steps += 1
             self.visited_states.append(curr)
             state = states.get(curr)
             if not state: break
-
             sType = state.get("Type")
             if sType == "Action":
                 res = self.run_action(curr, state)
-                if "ResultPath" in state:
-                    self.context[state["ResultPath"].split(".")[-1]] = res
+                if "ResultPath" in state: self.context[state["ResultPath"].split(".")[-1]] = res
                 curr = state.get("Next")
             elif sType == "Choice":
                 curr = state.get("Default")
                 for rule in state.get("Choices", []):
                     val = self.resolve_path(rule.get("Variable"), self.context)
                     if str(val) == str(rule.get("StringEquals")):
-                        curr = rule.get("Next")
-                        break
+                        curr = rule.get("Next"); break
             elif sType == "Pass":
-                if "Result" in state:
-                    self.context[state.get("ResultPath", "$.result").split(".")[-1]] = state["Result"]
+                if "Result" in state: self.context[state.get("ResultPath", "$.result").split(".")[-1]] = state["Result"]
                 curr = state.get("Next")
             elif sType == "Wait":
                 time.sleep(float(state.get("Seconds", 1)))
                 curr = state.get("Next")
-            elif sType in ["Succeed", "Fail"]:
-                break
-            
+            elif sType in ["Succeed", "Fail"]: break
             if state.get("End"): break
-            
         return self.logs, self.context, self.visited_states
 
 # ==========================================
-# 2. APP UI CONFIG
+# 3. HELPERS & GRAPH
 # ==========================================
-st.set_page_config(page_title="ZIS Studio", layout="wide", page_icon="⚡")
-
-if "flow_json" not in st.session_state:
-    st.session_state["flow_json"] = {
-        "StartAt": "StartStep",
-        "States": {"StartStep": {"Type": "Pass", "End": True}}
-    }
-
-if "editor_key" not in st.session_state:
-    st.session_state["editor_key"] = 0 
-
-if "editor_content" not in st.session_state:
-    st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-
-text_settings = ["zd_subdomain", "zd_email", "zd_token"]
-for key in text_settings:
-    if key not in st.session_state: st.session_state[key] = ""
-
 def get_auth():
-    if st.session_state.zd_email and st.session_state.zd_token:
-        return HTTPBasicAuth(f"{st.session_state.zd_email}/token", st.session_state.zd_token)
-    return None
+    return HTTPBasicAuth(f"{st.session_state.zd_email}/token", st.session_state.zd_token) if st.session_state.zd_token else None
 
 def get_base_url():
-    sub = st.session_state.zd_subdomain
-    return f"https://{sub}.zendesk.com/api/services/zis/registry" if sub else ""
+    return f"https://{st.session_state.zd_subdomain}.zendesk.com/api/services/zis/registry" if st.session_state.zd_subdomain else ""
 
 def test_connection():
     try:
-        sub = st.session_state.zd_subdomain
-        if not sub: return False, "❌ Missing Subdomain"
-        url = f"https://{sub}.zendesk.com/api/v2/users/me.json"
-        response = requests.get(url, auth=get_auth())
-        if response.status_code == 200: return True, f"✅ Connected"
-        return False, f"❌ Error: {response.status_code}"
-    except Exception as e: return False, f"❌ Error: {str(e)}"
+        r = requests.get(f"https://{st.session_state.zd_subdomain}.zendesk.com/api/v2/users/me.json", auth=get_auth())
+        return (True, "✅ Active") if r.status_code == 200 else (False, f"❌ Error {r.status_code}")
+    except Exception as e: return False, f"❌ {str(e)}"
 
-# ==========================================
-# 3. VISUALIZATION FUNCTION (UNIVERSAL THEME)
-# ==========================================
 def render_flow_graph(flow_def, highlight_path=None):
-    if not HAS_GRAPHVIZ:
-        st.warning("⚠️ Graphviz not installed.")
-        return
-    
+    if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
         dot = graphviz.Digraph(comment='ZIS Flow')
-        dot.attr(rankdir='TB', splines='ortho')
+        dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
+        dot.attr('node', shape='box', style='rounded,filled', fillcolor='white', fontname='Arial', fontsize='12')
+        dot.attr('edge', color='#555555')
         
-        # [THEME FIX] Transparent background + High Contrast colors
-        # This makes the graph readable on BOTH Dark and Light modes.
-        dot.attr(bgcolor='transparent')
-        
-        # Nodes: White background, Black text (Always readable)
-        dot.attr('node', shape='box', style='rounded,filled', fillcolor='white', fontcolor='black', fontname='Arial', fontsize='12')
-        
-        # Edges: Dark Grey (Visible on white, readable on dark grey)
-        dot.attr('edge', color='#555555', fontcolor='#555555')
+        visited = set(highlight_path) if highlight_path else set()
+        start = flow_def.get("StartAt")
+        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled")
+        if start: dot.edge("START", start)
 
-        visited_set = set(highlight_path) if highlight_path else set()
-        
-        start_node = flow_def.get("StartAt")
-        # Start Node: Green
-        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8")
-        
-        if start_node: dot.edge("START", start_node)
-
-        for name, state in flow_def.get("States", {}).items():
-            # Default: White
-            fill = "white"
-            penwidth = "1"
-            
-            # Active Path: Green
-            if name in visited_set: 
+        for k, v in flow_def.get("States", {}).items():
+            fill = "#F0F2F6"
+            pen = "1"
+            if k in visited:
                 fill = "#C8E6C9"
-                penwidth = "2"
-                if highlight_path and name == highlight_path[-1]: fill = "#81C784"
+                pen = "2"
+                if highlight_path and k == highlight_path[-1]: fill = "#81C784"
             
-            label = f"{name}\n({state.get('Type','?')})"
-            dot.node(name, label, fillcolor=fill, penwidth=penwidth)
+            dot.node(k, f"{k}\n({v.get('Type')})", fillcolor=fill, penwidth=pen)
             
-            if "Next" in state: dot.edge(name, state["Next"])
-            elif state.get("Type") == "Choice":
-                for rule in state.get("Choices", []):
-                    dot.edge(name, rule.get("Next"), label="If Match")
-                if "Default" in state: dot.edge(name, state["Default"], label="Default")
-            elif state.get("End"):
-                # End Node: Dark Grey
-                dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6")
-                dot.edge(name, "END")
+            if "Next" in v: dot.edge(k, v["Next"])
+            if "Default" in v: dot.edge(k, v["Default"], label="Default")
+            for c in v.get("Choices", []): dot.edge(k, c.get("Next"), label="If Match")
+            if v.get("End"): 
+                dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
+                dot.edge(k, "END")
         
         st.graphviz_chart(dot)
-    except Exception as e:
-        st.error(f"Graph Error: {e}")
+    except: pass
 
 # ==========================================
-# 4. MAIN TABS
+# 4. SIDEBAR (CONNECTION)
 # ==========================================
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "🔌 Connection", 
-    "📥 Import", 
-    "🚀 Deploy", 
-    "📝 Code", 
-    "🎨 Designer", 
-    "🐞 Debug"
-])
-
-# TAB 1: CONNECTION
-with tab1:
-    st.header("Connection")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.text_input("Subdomain", key="zd_subdomain")
+with st.sidebar:
+    st.title("⚡ ZIS Settings")
+    
+    with st.expander("🔑 Credentials", expanded=True):
+        st.text_input("Subdomain", key="zd_subdomain", help="Just the subdomain, e.g., 'z3n-demo'")
         st.text_input("Email", key="zd_email")
-        st.text_input("Token", key="zd_token", type="password")
-        if st.button("Test", key="btn_test"):
+        st.text_input("API Token", key="zd_token", type="password")
+        
+        if st.button("Test Connection", use_container_width=True):
             ok, msg = test_connection()
             if ok: 
                 st.session_state["is_connected"] = True
-                st.success(msg)
-            else: st.error(msg)
+                st.toast(msg, icon="✅")
+            else: 
+                st.toast(msg, icon="❌")
+    
+    st.divider()
+    st.caption("v1.0 - ZIS Studio Beta")
 
-# TAB 2: IMPORT
-with tab2:
-    st.header("Load Flows")
+# ==========================================
+# 5. MAIN WORKSPACE
+# ==========================================
+st.title("ZIS Studio")
+
+t_imp, t_code, t_vis, t_dep, t_deb = st.tabs([
+    "📥 Import", 
+    "📝 Code Editor", 
+    "🎨 Visual Designer", 
+    "🚀 Deploy", 
+    "🐞 Debugger"
+])
+
+# --- TAB 1: IMPORT ---
+with t_imp:
+    st.markdown("### 🔎 Find Existing Flows")
+    
     if not st.session_state.get("is_connected"):
-        st.warning("Please connect first.")
+        st.info("👈 Please connect your Zendesk account in the sidebar.")
     else:
-        st.markdown("**Find every Flow in your account.**")
-        
-        if st.button("🚀 Start Deep Scan", key="btn_deep_scan"):
+        if st.button("🚀 Start Deep Scan", type="primary"):
             results = []
-            prog = st.progress(0)
-            status = st.empty()
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
             try:
-                status.text("Fetching Integrations...")
+                status_text.text("Fetching Integrations...")
                 resp = requests.get(f"{get_base_url()}/integrations", auth=get_auth())
                 
-                if resp.status_code == 401:
-                     st.error("🚨 401 Unauthorized. ZIS might be disabled.")
-                elif resp.status_code != 200: st.error(f"Failed: {resp.status_code}")
-                else:
+                if resp.status_code == 200:
                     ints = resp.json().get("integrations", [])
-                    total = len(ints)
-                    for i, obj in enumerate(ints):
-                        name = obj["name"]
-                        status.text(f"Scanning {i+1}/{total}: {name}")
-                        prog.progress((i+1)/total)
+                    total_ints = len(ints)
+                    
+                    for idx, int_obj in enumerate(ints):
+                        int_name = int_obj["name"]
+                        status_text.text(f"Scanning {idx+1}/{total_ints}: {int_name}...")
+                        progress_bar.progress((idx + 1) / total_ints)
                         
-                        r_bun = requests.get(f"{get_base_url()}/{name}/bundles", auth=get_auth())
-                        if r_bun.status_code == 200:
-                            for b in r_bun.json().get("bundles", []):
+                        b_resp = requests.get(f"{get_base_url()}/{int_name}/bundles", auth=get_auth())
+                        if b_resp.status_code == 200:
+                            for b in b_resp.json().get("bundles", []):
                                 results.append({
-                                    "int": name, 
+                                    "int": int_name, 
                                     "bun": b["name"],
                                     "uuid": b.get("uuid", "")
                                 })
                         time.sleep(0.05)
+                    
                     st.session_state["scan_results"] = results
-                    if not results: st.warning("Found 0 bundles.")
-                    else: st.success(f"Found {len(results)} bundles.")
+                    status_text.empty()
+                    progress_bar.empty()
+                    if not results: st.warning("Scan complete. No bundles found.")
+                    
+                else: st.error("Failed to fetch integrations.")
             except Exception as e: st.error(str(e))
 
-        if "scan_results" in st.session_state and st.session_state["scan_results"]:
+        if "scan_results" in st.session_state:
             res = st.session_state["scan_results"]
+            st.divider()
+            st.metric("Flows Found", len(res))
+            
             if res:
-                sel_idx = st.selectbox("Select Bundle", range(len(res)), format_func=lambda i: f"{res[i]['int']} -> {res[i]['bun']}")
-                sel_item = res[sel_idx]
-                
-                if st.button("Load Flow", key="btn_load_flow"):
-                    identifier = sel_item['uuid'] if sel_item['uuid'] else sel_item['bun']
-                    url = f"{get_base_url()}/{sel_item['int']}/bundles/{identifier}"
+                with st.container(border=True):
+                    sel_idx = st.selectbox("Select Flow to Load", range(len(res)), format_func=lambda i: f"{res[i]['int']} / {res[i]['bun']}")
                     
-                    with st.spinner("Downloading Bundle..."):
-                        r = requests.get(url, auth=get_auth())
+                    if st.button("Load Flow", key="btn_load_final"):
+                        item = res[sel_idx]
+                        url = f"{get_base_url()}/{item['int']}/bundles/{item['uuid'] or item['bun']}"
                         
+                        r = requests.get(url, auth=get_auth())
                         if r.status_code == 200:
-                            data = r.json()
                             found = False
-                            for k, v in data.get("resources", {}).items():
+                            for k, v in r.json().get("resources", {}).items():
                                 if "Flow" in v.get("type", ""):
-                                    raw = v["properties"]["definition"]
-                                    st.session_state["flow_json"] = clean_flow_logic(raw)
+                                    st.session_state["flow_json"] = clean_flow_logic(v["properties"]["definition"])
                                     st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-                                    st.session_state["current_bundle_name"] = sel_item['bun']
-                                    st.session_state["current_int_name"] = sel_item['int']
+                                    st.session_state["current_bundle_name"] = item['bun']
                                     st.session_state["editor_key"] += 1
-                                    
-                                    st.success("Loaded Successfully!")
+                                    st.toast("Flow Loaded!", icon="🎉")
                                     found = True
-                                    time.sleep(0.5)
-                                    safe_rerun()
+                                    time.sleep(0.5); safe_rerun()
                                     break
-                            if not found: st.warning("Bundle loaded, but no Flow inside.")
-                        else: 
-                            st.error(f"Failed to fetch content (Status {r.status_code}).")
+                            if not found: st.warning("No Flow resource found.")
+                        else: st.error("Fetch failed.")
 
-# TAB 3: DEPLOY
-with tab3:
-    st.header("Deploy")
-    if not st.session_state.get("is_connected"):
-        st.warning("Please connect first.")
-    else:
-        sub = st.session_state.get("zd_subdomain", "sub")
-        valid_int = f"zis_playground_{sub.lower().strip()}"
-        st.info(f"Target Integration: `{valid_int}`")
-        
-        def_bun = st.session_state.get("current_bundle_name", "my_new_flow")
-        dep_bun = st.text_input("Bundle Name", value=def_bun, key="dep_bun_name")
-        
-        if st.button("Deploy to Production", type="primary", key="btn_deploy_prod"):
-            with st.spinner("Deploying..."):
-                try:
-                    # 1. Create/Check Integration (Idempotent)
-                    requests.post(f"{get_base_url()}/integrations", auth=get_auth(), 
-                                  json={"name": valid_int, "display_name": valid_int}, 
-                                  headers={"Content-Type": "application/json"})
-                    
-                    # 2. Upload Bundle
-                    safe_bun = dep_bun.lower().replace("-", "_").replace(" ", "")
-                    res_name = f"{safe_bun}_flow"
-                    clean_def = clean_flow_logic(st.session_state["flow_json"])
-                    
-                    payload = {
-                        "zis_template_version": "2019-10-14",
-                        "name": safe_bun,
-                        "resources": {
-                            res_name: {
-                                "type": "ZIS::Flow",
-                                "properties": {"name": res_name, "definition": clean_def}
-                            }
-                        }
-                    }
-                    
-                    url = f"{get_base_url()}/{valid_int}/bundles"
-                    r = requests.post(url, auth=get_auth(), json=payload, headers={"Content-Type": "application/json"})
-                    
-                    if r.status_code in [200, 201]:
-                        st.balloons()
-                        st.success(f"Deployed: {safe_bun}")
-                    else:
-                        st.error(f"Failed: {r.status_code}")
-                        st.write(r.text)
-                except Exception as e: st.error(str(e))
-
-# TAB 4: CODE
-with tab4:
-    st.header("JSON Editor")
+# --- TAB 2: CODE ---
+with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
-    
     if HAS_EDITOR:
-        btn_settings = [{"name": "Apply", "feather": "Save", "primary": True, "hasText": True, "alwaysOn": True, "commands": ["submit"]}]
-        response = code_editor(st.session_state.get("editor_content", ""), lang="json", height=[20, 30], buttons=btn_settings, key=dynamic_key)
-        if response['type'] == "submit" and response['text']:
+        btn_settings = [{"name": "Save", "feather": "Save", "primary": True, "hasText": True, "alwaysOn": True, "commands": ["submit"]}]
+        resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, buttons=btn_settings, key=dynamic_key)
+        if resp['type'] == "submit":
             try:
-                js = json.loads(response['text'])
-                if "definition" in js: js = js["definition"]
-                st.session_state["flow_json"] = clean_flow_logic(js)
+                js = json.loads(resp['text'])
+                st.session_state["flow_json"] = clean_flow_logic(js["definition"] if "definition" in js else js)
                 st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-                st.success("Updated!")
-                time.sleep(0.1); safe_rerun()
-            except Exception as e: st.error(f"Invalid JSON: {e}")
+                st.toast("Code Saved", icon="💾"); time.sleep(0.2); safe_rerun()
+            except: st.error("Invalid JSON")
     else:
-        st.warning("⚠️ Install `streamlit-code-editor` for highlighting.")
-        txt = st.text_area("Flow", value=st.session_state.get("editor_content",""), height=600, key=dynamic_key)
-        if st.button("💾 Apply", key="btn_apply_code"):
+        txt = st.text_area("JSON", st.session_state.get("editor_content", ""), height=500, key=dynamic_key)
+        if st.button("Save", key="save_text"):
             try:
                 js = json.loads(txt)
-                if "definition" in js: st.session_state["flow_json"] = clean_flow_logic(js["definition"])
-                else: st.session_state["flow_json"] = clean_flow_logic(js)
+                st.session_state["flow_json"] = clean_flow_logic(js["definition"] if "definition" in js else js)
                 st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-                st.success("Updated!")
-                time.sleep(0.1); safe_rerun()
-            except Exception as e: st.error(f"Invalid JSON: {e}")
+                st.toast("Saved", icon="💾"); time.sleep(0.2); safe_rerun()
+            except: st.error("Invalid JSON")
 
-# TAB 5: VISUAL
-with tab5:
+# --- TAB 3: DESIGNER ---
+with t_vis:
     c1, c2 = st.columns([1, 2])
     curr = st.session_state["flow_json"]
     states = curr.get("States", {})
     keys = list(states.keys())
     
     with c1:
-        st.subheader("Step Editor")
-        sel = st.selectbox("Select Step", ["(New)"] + keys, key="vis_sel")
+        st.subheader("🛠️ Configure Step")
+        if not keys:
+            st.info("Start by adding a step below.")
+            selected_step = None
+        else:
+            selected_step = st.selectbox("Select Step to Edit", ["(Select a Step)"] + keys, key="sel_step_edit")
         
-        if sel == "(New)":
-            new_name = st.text_input("Name", key="new_step_name")
-            new_type = st.selectbox("Type", ["Pass", "Action", "Choice", "Wait", "Succeed", "Fail"], key="new_step_type")
-            if st.button("Add", key="btn_add_step"):
-                if new_name and new_name not in states:
-                    new_def = {"Type": new_type, "End": True}
-                    if new_type == "Wait": new_def["Seconds"] = 5
-                    elif new_type == "Pass": new_def["ResultPath"] = "$.result"
-                    elif new_type == "Choice": new_def["Choices"] = []; new_def["Default"] = new_name
-                    elif new_type == "Action": new_def["ActionName"] = "zis:common:action:fetch"; new_def["Parameters"] = {}
+        with st.expander("➕ Add New Step", expanded=False):
+            new_step_name = st.text_input("New Step Name", placeholder="e.g., CheckTicket", key="inp_new_name")
+            new_step_type = st.selectbox("Step Type", ["Action", "Choice", "Wait", "Pass", "Succeed", "Fail"], key="sel_new_type")
+            if st.button("Create Step", key="btn_create_step"):
+                if new_step_name and new_step_name not in states:
+                    new_def = {"Type": new_step_type}
+                    if new_step_type == "Wait": new_def["Seconds"] = 5
+                    elif new_step_type == "Pass": new_def["ResultPath"] = "$.result"
+                    elif new_step_type == "Choice": 
+                        new_def["Choices"] = []
+                        new_def["Default"] = new_step_name 
+                    elif new_step_type == "Fail": new_def["Error"] = "ErrorName"; new_def["Cause"] = "Cause"
+                    elif new_step_type == "Action": new_def["ActionName"] = "zis:common:action:fetch"; new_def["Parameters"] = {}
                     else: new_def["End"] = True
-                    st.session_state["flow_json"]["States"][new_name] = new_def
+                    st.session_state["flow_json"]["States"][new_step_name] = new_def
                     st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+                    st.success(f"Created {new_step_name}")
                     safe_rerun()
-        
-        elif sel in states:
-            data = states[sel]
-            sType = data.get("Type")
-            st.markdown(f"### {sel} `[{sType}]`")
-            k = f"_{sel}"
-            
-            if sType not in ["Succeed", "Fail", "Choice"]:
-                is_end = st.checkbox("End?", value=data.get("End", False), key=f"end{k}")
-                if is_end: 
-                    data["End"] = True
-                    data.pop("Next", None)
-                else:
-                    data.pop("End", None)
-                    opts = [x for x in keys if x != sel]
-                    curr_next = data.get("Next", "")
-                    idx = opts.index(curr_next) if curr_next in opts else 0
-                    if opts: data["Next"] = st.selectbox("Next", opts, index=idx, key=f"next{k}_{len(opts)}")
+                else: st.error("Name required or already exists.")
 
-            if sType == "Action":
-                data["ActionName"] = st.text_input("Action Name", value=data.get("ActionName", ""), key=f"an{k}")
-                p_str = json.dumps(data.get("Parameters", {}), indent=2)
-                p_new = st.text_area("Parameters JSON", value=p_str, height=100, key=f"ap{k}")
-                try: data["Parameters"] = json.loads(p_new)
-                except: st.error("Bad JSON")
-            elif sType == "Wait":
-                data["Seconds"] = st.number_input("Seconds", value=int(data.get("Seconds", 5)), key=f"ws{k}")
-            elif sType == "Choice":
-                opts = [x for x in keys if x!=sel]
-                d_val = data.get("Default", "")
-                d_idx = opts.index(d_val) if d_val in opts else 0
-                if opts: data["Default"] = st.selectbox("Default Route", opts, index=d_idx, key=f"cd{k}_{len(opts)}")
-                choices = data.get("Choices", [])
-                for i, rule in enumerate(choices):
-                    c1a, c2a = st.columns([3, 1])
-                    with c1a: st.text(f"Rule {i+1}: {rule.get('Variable')}")
-                    with c2a: 
-                        if st.button("x", key=f"delr{k}_{i}"): choices.pop(i); safe_rerun()
-                if st.button("Add Rule", key=f"addr{k}"):
-                    if "Choices" not in data: data["Choices"] = []
-                    data["Choices"].append({"Variable": "$.input", "StringEquals": "val", "Next": opts[0] if opts else ""})
-                    safe_rerun()
+        st.divider()
+        if selected_step and selected_step != "(Select a Step)" and selected_step in states:
+            step_data = states[selected_step]
+            step_type = step_data.get("Type")
+            st.markdown(f"### ⚙️ {selected_step} `[{step_type}]`")
+            
+            key_suffix = f"_{selected_step}"
+            
+            is_terminal = step_type in ["Succeed", "Fail", "Choice"] 
+            if not is_terminal:
+                is_end = st.checkbox("End Flow?", value=step_data.get("End", False), key=f"chk_is_end{key_suffix}")
+                if is_end: step_data["End"] = True; step_data.pop("Next", None)
+                else:
+                    step_data.pop("End", None)
+                    current_next = step_data.get("Next", "")
+                    next_options = [opt for opt in keys if opt != selected_step]
+                    if next_options:
+                        if current_next in next_options: idx = next_options.index(current_next)
+                        else: idx = 0
+                        step_data["Next"] = st.selectbox("Go to Next", next_options, index=idx, key=f"sel_next_step{key_suffix}_{len(next_options)}")
+                    else:
+                        st.warning("Create another step to link to.")
+
+            if step_type == "Action":
+                step_data["ActionName"] = st.text_input("Action Name", value=step_data.get("ActionName", ""), key=f"inp_act_name{key_suffix}")
+                current_params = json.dumps(step_data.get("Parameters", {}), indent=2)
+                new_params = st.text_area("Parameters JSON", value=current_params, height=150, key=f"inp_act_params{key_suffix}")
+                try: step_data["Parameters"] = json.loads(new_params)
+                except: st.error("Invalid JSON")
+            elif step_type == "Wait":
+                step_data["Seconds"] = st.number_input("Wait (Sec)", min_value=1, value=int(step_data.get("Seconds", 5)), key=f"inp_wait_sec{key_suffix}")
+            elif step_type == "Choice":
+                current_def = step_data.get("Default", "")
+                opts = [o for o in keys if o != selected_step]
+                def_idx = opts.index(current_def) if current_def in opts else 0
+                if opts: step_data["Default"] = st.selectbox("Else (Default Path)", opts, index=def_idx, key=f"sel_choice_def{key_suffix}_{len(opts)}")
+                choices = step_data.get("Choices", [])
+                for i, choice in enumerate(choices):
+                    with st.expander(f"Rule #{i+1}: {choice.get('Variable','?')}", expanded=False):
+                        choice["Variable"] = st.text_input("Var", value=choice.get("Variable", "$.input..."), key=f"c_var_{i}{key_suffix}")
+                        ops = ["StringEquals", "NumericEquals", "BooleanEquals"]
+                        curr_op = next((op for op in ops if op in choice), "StringEquals")
+                        new_op = st.selectbox("Op", ops, index=ops.index(curr_op), key=f"c_op_{i}{key_suffix}")
+                        val = choice.get(curr_op, "")
+                        choice[new_op] = st.text_input("Val", value=str(val), key=f"c_val_{i}{key_suffix}")
+                        if new_op != curr_op and curr_op in choice: del choice[curr_op]
+                        curr_next = choice.get("Next", "")
+                        n_idx = opts.index(curr_next) if curr_next in opts else 0
+                        choice["Next"] = st.selectbox("Go To", opts, index=n_idx, key=f"c_next_{i}{key_suffix}")
+                        if st.button("🗑️", key=f"del_rule_{i}{key_suffix}"): choices.pop(i); safe_rerun()
+                if st.button("➕ Add Rule", key=f"btn_add_rule{key_suffix}"):
+                    if opts: 
+                        if "Choices" not in step_data: step_data["Choices"] = []
+                        step_data["Choices"].append({"Variable": "$.input", "StringEquals": "", "Next": opts[0]})
+                        safe_rerun()
+            elif step_type == "Pass":
+                new_res = st.text_area("Result JSON", value=json.dumps(step_data.get("Result", {}), indent=2), key=f"inp_pass_res{key_suffix}")
+                try: step_data["Result"] = json.loads(new_res)
+                except: st.error("Invalid JSON")
+            elif step_type == "Fail":
+                step_data["Error"] = st.text_input("Error Code", value=step_data.get("Error", "Error"), key=f"inp_fail_err{key_suffix}")
+                step_data["Cause"] = st.text_input("Cause", value=step_data.get("Cause", ""), key=f"inp_fail_cause{key_suffix}")
 
             st.write("---")
-            if st.button("Delete Step", key=f"del{k}"):
-                del st.session_state["flow_json"]["States"][sel]
-                st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-                safe_rerun()
-            if st.button("Save Changes", type="primary", key=f"sav{k}"):
-                st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-                st.success("Saved")
-                safe_rerun()
+            col_del, col_save = st.columns(2)
+            with col_del:
+                if st.button("🗑️ Delete Step", type="secondary", key=f"btn_del_step{key_suffix}"):
+                    del st.session_state["flow_json"]["States"][selected_step]
+                    st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+                    safe_rerun()
+            with col_save:
+                if st.button("💾 Apply Changes", type="primary", key=f"btn_apply_visual{key_suffix}"):
+                    st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+                    st.success("Saved!")
+                    safe_rerun()
 
     with c2:
+        st.markdown("### Visual Flow")
         render_flow_graph(curr)
 
-# TAB 6: DEBUG
-with tab6:
-    st.subheader("Local Debugger")
-    inp = st.text_area("Input", '{"ticket": {"id": 1}}', height=200)
-    if st.button("Run", key="btn_run"):
-        try:
-            eng = ZISFlowEngine(st.session_state["flow_json"], json.loads(inp), {}, {})
-            logs, ctx, path = eng.run()
-            c1, c2 = st.columns(2)
-            with c1: 
-                st.write("### Logs")
+# --- TAB 4: DEPLOY ---
+with t_dep:
+    if not st.session_state.get("is_connected"): st.warning("Connect first")
+    else:
+        st.markdown("### 🚀 Deploy to ZIS")
+        sub = st.session_state.get("zd_subdomain", "sub")
+        valid_int = f"zis_playground_{sub.lower().strip()}"
+        
+        with st.container(border=True):
+            st.info(f"Target Integration: **{valid_int}**")
+            bun_name = st.text_input("Bundle Name", value=st.session_state.get("current_bundle_name", "my_new_flow"))
+            
+            if st.button("Deploy Bundle", type="primary"):
+                with st.status("Deploying...", expanded=True) as status:
+                    try:
+                        requests.post(f"{get_base_url()}/integrations", auth=get_auth(), json={"name": valid_int, "display_name": valid_int}, headers={"Content-Type": "application/json"})
+                        status.write("Integration checked.")
+                        
+                        safe_bun = bun_name.lower().replace("-", "_").replace(" ", "")
+                        res_name = f"{safe_bun}_flow"
+                        clean_def = clean_flow_logic(st.session_state["flow_json"])
+                        
+                        payload = {
+                            "zis_template_version": "2019-10-14", "name": safe_bun,
+                            "resources": {res_name: {"type": "ZIS::Flow", "properties": {"name": res_name, "definition": clean_def}}}
+                        }
+                        
+                        r = requests.post(f"{get_base_url()}/{valid_int}/bundles", auth=get_auth(), json=payload, headers={"Content-Type": "application/json"})
+                        
+                        if r.status_code in [200, 201]:
+                            st.balloons()
+                            status.update(label="Deployment Successful!", state="complete")
+                            st.success(f"Deployed **{safe_bun}**")
+                        else:
+                            status.update(label="Deployment Failed", state="error")
+                            st.error(r.text)
+                    except Exception as e: st.error(str(e))
+
+# --- TAB 5: DEBUG ---
+# [FIX] Debug Layout: Input/Logs Left | Graph Right
+with t_deb:
+    col_left, col_right = st.columns([1, 1])
+    
+    with col_left:
+        st.subheader("Simulate & Test")
+        inp = st.text_area("JSON Input", '{"ticket": {"id": 123}}', height=200)
+        
+        if st.button("▶️ Run Simulation", type="primary"):
+            try:
+                eng = ZISFlowEngine(st.session_state["flow_json"], json.loads(inp), {}, {})
+                logs, ctx, path = eng.run()
+                st.session_state["debug_res"] = (logs, ctx, path)
+            except Exception as e: st.error(f"Error: {e}")
+
+        # LOGS BELOW INPUT
+        if "debug_res" in st.session_state:
+            logs, ctx, path = st.session_state["debug_res"]
+            st.divider()
+            with st.expander("📜 Logs", expanded=True):
                 for l in logs: st.text(l)
-            with c2:
-                st.write("### Output")
+            with st.expander("📦 Context Output"):
                 st.json(ctx)
-            st.write("### Path")
-            render_flow_graph(st.session_state["flow_json"], highlight_path=path)
-        except Exception as e: st.error(str(e))
+
+    with col_right:
+        st.subheader("Visual Trace")
+        if "debug_res" in st.session_state:
+            _, _, path = st.session_state["debug_res"]
+            render_flow_graph(st.session_state["flow_json"], path)
+        else:
+            render_flow_graph(st.session_state["flow_json"])
