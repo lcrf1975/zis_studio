@@ -38,25 +38,50 @@ def clean_flow_logic(flow_data):
 # 1. THEME & CONFIG
 # ==========================================
 st.set_page_config(
-    page_title="ZIS Studio", 
+    page_title="ZIS Studio Beta", 
     layout="wide", 
     page_icon="⚡",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for compact layout
+# [CSS OVERRIDES]
+# 1. Force Dark Mode colors (Backgrounds, Text)
+# 2. Widen Sidebar
+# 3. Hide Header
 st.markdown("""
 <style>
+    /* FORCE DARK THEME */
+    .stApp {
+        background-color: #0E1117;
+        color: #FAFAFA;
+    }
+    .stTextInput > label, .stSelectbox > label, .stTextArea > label {
+        color: #FAFAFA !important;
+    }
+    
+    /* WIDER SIDEBAR */
+    [data-testid="stSidebar"] {
+        min-width: 400px;
+        max-width: 500px;
+    }
+    
+    /* Hide Streamlit Header */
     header {visibility: hidden;}
+    
+    /* Content Padding */
     .block-container {
-        padding-top: 1rem;
+        padding-top: 2rem;
         padding-bottom: 2rem;
     }
+    
+    /* ZIS Title Styling */
     h1 {
         color: #FFB100; 
         font-family: 'Helvetica', sans-serif;
-        margin-top: -3rem;
+        margin-top: -1rem;
     }
+    
+    /* Button Styling */
     .stButton>button {
         border-radius: 8px; 
         font-weight: bold; 
@@ -184,8 +209,9 @@ def render_flow_graph(flow_def, highlight_path=None):
     try:
         dot = graphviz.Digraph(comment='ZIS Flow')
         dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
-        dot.attr('node', shape='box', style='rounded,filled', fillcolor='white', fontname='Arial', fontsize='12')
-        dot.attr('edge', color='#555555')
+        # Force white nodes with black text for contrast in dark mode
+        dot.attr('node', shape='box', style='rounded,filled', fillcolor='white', fontcolor='black', fontname='Arial', fontsize='12')
+        dot.attr('edge', color='#dddddd') # Light grey lines for visibility
         
         visited = set(highlight_path) if highlight_path else set()
         start = flow_def.get("StartAt")
@@ -193,7 +219,7 @@ def render_flow_graph(flow_def, highlight_path=None):
         if start: dot.edge("START", start)
 
         for k, v in flow_def.get("States", {}).items():
-            fill = "#F0F2F6"
+            fill = "white"
             pen = "1"
             if k in visited:
                 fill = "#C8E6C9"
@@ -254,7 +280,6 @@ with t_imp:
     if not st.session_state.get("is_connected"):
         st.info("👈 Please connect your Zendesk account in the sidebar.")
     else:
-        # 1. Action Button
         if st.button("🚀 Start Deep Scan", type="primary"):
             results = []
             progress_bar = st.progress(0)
@@ -286,15 +311,13 @@ with t_imp:
                     st.session_state["scan_results"] = results
                     status_text.empty()
                     progress_bar.empty()
-                    
                     if not results: st.warning("Scan complete. No bundles found.")
                     else: st.success(f"✅ Scan Complete. Found {len(results)} bundles.")
                     
                 else: st.error("Failed to fetch integrations.")
             except Exception as e: st.error(str(e))
 
-        # 2. Results (Stacked Below)
-        if "scan_results" in st.session_state and st.session_state["scan_results"]:
+        if "scan_results" in st.session_state:
             res = st.session_state["scan_results"]
             st.divider()
             
@@ -304,7 +327,6 @@ with t_imp:
                 
                 if st.button("Load Flow", key="btn_load_final"):
                     item = res[sel_idx]
-                    # UUID priority for reliable fetch
                     url = f"{get_base_url()}/{item['int']}/bundles/{item['uuid'] or item['bun']}"
                     
                     with st.spinner("Downloading code..."):
@@ -316,12 +338,12 @@ with t_imp:
                                     st.session_state["flow_json"] = clean_flow_logic(v["properties"]["definition"])
                                     st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
                                     st.session_state["current_bundle_name"] = item['bun']
-                                    st.session_state["editor_key"] += 1 # Force Editor Refresh
+                                    st.session_state["editor_key"] += 1 
                                     st.toast("Flow Loaded Successfully!", icon="🎉")
                                     found = True
                                     time.sleep(0.5); safe_rerun()
                                     break
-                            if not found: st.warning("No Flow resource found in this bundle.")
+                            if not found: st.warning("No Flow resource found.")
                         else: st.error("Fetch failed. Please check permissions.")
 
 # --- TAB 2: CODE (SMALLER) ---
@@ -329,8 +351,7 @@ with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
         btn_settings = [{"name": "Save", "feather": "Save", "primary": True, "hasText": True, "alwaysOn": True, "commands": ["submit"]}]
-        # [FIX] Height reduced to 400px
-        resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=400, buttons=btn_settings, key=dynamic_key)
+        resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, buttons=btn_settings, key=dynamic_key)
         if resp['type'] == "submit":
             try:
                 js = json.loads(resp['text'])
@@ -339,8 +360,7 @@ with t_code:
                 st.toast("Code Saved", icon="💾"); time.sleep(0.2); safe_rerun()
             except: st.error("Invalid JSON")
     else:
-        # Fallback text area also smaller
-        txt = st.text_area("JSON", st.session_state.get("editor_content", ""), height=400, key=dynamic_key)
+        txt = st.text_area("JSON", st.session_state.get("editor_content", ""), height=500, key=dynamic_key)
         if st.button("Save", key="save_text"):
             try:
                 js = json.loads(txt)
