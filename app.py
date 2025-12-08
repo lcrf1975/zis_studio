@@ -44,6 +44,28 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# [CSS OVERRIDES]
+# Only keeping the Sidebar Width adjustment.
+# We removed color overrides to let Streamlit's native Dark Mode work perfectly.
+st.markdown("""
+<style>
+    /* Widen the Sidebar */
+    [data-testid="stSidebar"] {
+        min-width: 450px;
+        max-width: 600px;
+    }
+    
+    /* Optional: Hide the standard Streamlit header for a cleaner look */
+    header {visibility: hidden;}
+    
+    /* Adjust top padding */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # Initialize Session State
 if "flow_json" not in st.session_state:
     st.session_state["flow_json"] = {"StartAt": "StartStep", "States": {"StartStep": {"Type": "Pass", "End": True}}}
@@ -155,8 +177,9 @@ def get_base_url():
 def test_connection():
     try:
         r = requests.get(f"https://{st.session_state.zd_subdomain}.zendesk.com/api/v2/users/me.json", auth=get_auth())
-        return (True, "✅ Active") if r.status_code == 200 else (False, f"❌ Error {r.status_code}")
-    except Exception as e: return False, f"❌ {str(e)}"
+        # FIXED: Removed the emoji here so it doesn't duplicate in st.toast
+        return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
+    except Exception as e: return False, f"{str(e)}"
 
 def render_flow_graph(flow_def, highlight_path=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
@@ -164,8 +187,7 @@ def render_flow_graph(flow_def, highlight_path=None):
         dot = graphviz.Digraph(comment='ZIS Flow')
         dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
         
-        # Use simple colors that work in both Light and Dark mode
-        # Nodes: White/Light Gray fill, Black text
+        # Neutral colors that work in both Light and Dark mode
         dot.attr('node', shape='box', style='rounded,filled', fillcolor='#f0f0f0', fontcolor='black', fontname='Arial', fontsize='12')
         dot.attr('edge', color='#888888') 
         
@@ -209,7 +231,7 @@ with st.sidebar:
             ok, msg = test_connection()
             if ok: 
                 st.session_state["is_connected"] = True
-                st.toast(msg, icon="✅")
+                st.toast(msg, icon="✅") # Icon is set here
             else: 
                 st.toast(msg, icon="❌")
     
