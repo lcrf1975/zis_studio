@@ -44,19 +44,39 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# [CSS OVERRIDES]
-# 1. Force Dark Mode colors (Backgrounds, Text)
-# 2. Widen Sidebar
-# 3. Hide Header
+# [CSS OVERRIDES] - UPDATED FOR DARK MODE FIXES
 st.markdown("""
 <style>
-    /* FORCE DARK THEME */
+    /* 1. FORCE DARK THEME BACKGROUNDS */
     .stApp {
         background-color: #0E1117;
         color: #FAFAFA;
     }
     .stTextInput > label, .stSelectbox > label, .stTextArea > label {
         color: #FAFAFA !important;
+    }
+    
+    /* 2. FIX TABS (Make inactive text lighter so it's visible) */
+    button[data-baseweb="tab"] {
+        color: #a0a0a0 !important; /* Light Gray for inactive */
+        font-weight: 600;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] {
+        color: #ffffff !important; /* White for active */
+        border-bottom-color: #ff4b4b !important;
+    }
+
+    /* 3. FIX BUTTONS (Prevent black text on dark background) */
+    .stButton > button {
+        color: #ffffff !important;
+        border: 1px solid #4a4a4a !important;
+        background-color: #262730 !important;
+        border-radius: 8px; 
+        font-weight: bold; 
+    }
+    .stButton > button:hover {
+        border-color: #ff4b4b !important;
+        color: #ff4b4b !important;
     }
     
     /* WIDER SIDEBAR */
@@ -79,13 +99,6 @@ st.markdown("""
         color: #FFB100; 
         font-family: 'Helvetica', sans-serif;
         margin-top: -1rem;
-    }
-    
-    /* Button Styling */
-    .stButton>button {
-        border-radius: 8px; 
-        font-weight: bold; 
-        border: none;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -351,7 +364,18 @@ with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
         btn_settings = [{"name": "Save", "feather": "Save", "primary": True, "hasText": True, "alwaysOn": True, "commands": ["submit"]}]
-        resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, buttons=btn_settings, key=dynamic_key)
+        
+        # --- DARK MODE EDITOR FIX ---
+        resp = code_editor(
+            st.session_state.get("editor_content", ""), 
+            lang="json", 
+            height=500, 
+            buttons=btn_settings, 
+            key=dynamic_key,
+            options={"theme": "monokai"} # <--- FORCES DARK EDITOR THEME
+        )
+        # ----------------------------
+
         if resp['type'] == "submit":
             try:
                 js = json.loads(resp['text'])
