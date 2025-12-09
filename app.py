@@ -90,6 +90,7 @@ class ZISFlowEngine:
         self.visited_states = []
 
     def log(self, step, message, status="INFO"):
+        # We store status separately in the string so we can parse it later for colors
         entry = f"[{time.strftime('%H:%M:%S')}] {step}: {message} ({status})"
         self.logs.append(entry)
 
@@ -122,7 +123,10 @@ class ZISFlowEngine:
         if url:
             try:
                 resp = requests.request(method, url, json=params.get("body"))
-                self.log(state_name, f"API {resp.status_code}", "SUCCESS")
+                if resp.status_code >= 400:
+                     self.log(state_name, f"API {resp.status_code}: {resp.text[:50]}...", "ERROR")
+                else:
+                     self.log(state_name, f"API {resp.status_code}", "SUCCESS")
                 return resp.json() if resp.content else {}
             except Exception as e:
                 self.log(state_name, f"Error: {e}", "ERROR")
@@ -182,32 +186,25 @@ def render_flow_graph(flow_def, highlight_path=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
         dot = graphviz.Digraph(comment='ZIS Flow')
-        # [FIX] Enforce tight layout
         dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
         
-        # Base Node Style
         dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12')
         dot.attr('edge', color='#888888') 
         
         visited = set(highlight_path) if highlight_path else set()
         start = flow_def.get("StartAt")
         
-        # START Node
         dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled")
         if start: dot.edge("START", start)
 
         for k, v in flow_def.get("States", {}).items():
-            # [FIXED COLOR LOGIC]
-            # Default = Gray (Unused)
             fill = "#e0e0e0" 
             pen = "1"
-            
-            # If Visited = Green
             if k in visited:
                 fill = "#C8E6C9" # Light Green
                 pen = "2"
                 if highlight_path and k == highlight_path[-1]: 
-                    fill = "#81C784" # Darker Green for current/last step
+                    fill = "#81C784" # Darker Green
             
             dot.node(k, f"{k}\n({v.get('Type')})", fillcolor=fill, penwidth=pen)
             
@@ -218,7 +215,6 @@ def render_flow_graph(flow_def, highlight_path=None):
                 dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
                 dot.edge(k, "END")
         
-        # [FIX] Render without expanding to full container width
         st.graphviz_chart(dot) 
     except: pass
 
@@ -268,51 +264,37 @@ with t_imp:
             results = []
             progress_bar = st.progress(0)
             status_text = st.empty()
-            
             try:
                 status_text.text("Fetching Integrations...")
                 resp = requests.get(f"{get_base_url()}/integrations", auth=get_auth())
-                
                 if resp.status_code == 200:
                     ints = resp.json().get("integrations", [])
                     total_ints = len(ints)
-                    
                     for idx, int_obj in enumerate(ints):
                         int_name = int_obj["name"]
                         status_text.text(f"Scanning {idx+1}/{total_ints}: {int_name}...")
                         progress_bar.progress((idx + 1) / total_ints)
-                        
                         b_resp = requests.get(f"{get_base_url()}/{int_name}/bundles", auth=get_auth())
                         if b_resp.status_code == 200:
                             for b in b_resp.json().get("bundles", []):
-                                results.append({
-                                    "int": int_name, 
-                                    "bun": b["name"],
-                                    "uuid": b.get("uuid", "")
-                                })
+                                results.append({"int": int_name, "bun": b["name"], "uuid": b.get("uuid", "")})
                         time.sleep(0.05)
-                    
                     st.session_state["scan_results"] = results
-                    status_text.empty()
-                    progress_bar.empty()
+                    status_text.empty(); progress_bar.empty()
                     if not results: st.warning("Scan complete. No bundles found.")
                     else: st.success(f"✅ Scan Complete. Found {len(results)} bundles.")
-                    
                 else: st.error("Failed to fetch integrations.")
             except Exception as e: st.error(str(e))
 
         if "scan_results" in st.session_state:
             res = st.session_state["scan_results"]
             st.divider()
-            
             with st.container(border=True):
                 st.subheader("Select a Flow to Load")
                 sel_idx = st.selectbox("Available Flows", range(len(res)), format_func=lambda i: f"{res[i]['int']} / {res[i]['bun']}")
-                
                 if st.button("Load Flow", key="btn_load_final"):
                     item = res[sel_idx]
                     url = f"{get_base_url()}/{item['int']}/bundles/{item['uuid'] or item['bun']}"
-                    
                     with st.spinner("Downloading code..."):
                         r = requests.get(url, auth=get_auth())
                         if r.status_code == 200:
@@ -330,21 +312,42 @@ with t_imp:
                             if not found: st.warning("No Flow resource found.")
                         else: st.error("Fetch failed. Please check permissions.")
 
-# --- TAB 2: CODE (SAVE FIX) ---
+# --- TAB 2: CODE (VALIDATE & PRETTIFY) ---
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
         
-        # [FIX] Internal Button Config
-        btn_settings = [{
-            "name": "Save", 
-            "feather": "Save", 
-            "primary": True, 
-            "hasText": True, 
-            "alwaysOn": True, 
-            "commands": ["submit"],
-            "style": {"top": "0.46rem", "right": "0.4rem"} 
-        }]
+        # [NEW BUTTONS] Added Validate (check) and Prettify (command)
+        # All use "submit" to ensure we get the latest text content in the response
+        btn_settings = [
+            {
+                "name": "Validate",
+                "feather": "CheckCircle",
+                "primary": False,
+                "hasText": True,
+                "alwaysOn": True,
+                "commands": ["submit"],
+                "style": {"top": "0.46rem", "right": "8rem"} 
+            },
+            {
+                "name": "Prettify",
+                "feather": "AlignLeft",
+                "primary": False,
+                "hasText": True,
+                "alwaysOn": True,
+                "commands": ["submit"],
+                "style": {"top": "0.46rem", "right": "4.2rem"} 
+            },
+            {
+                "name": "Save", 
+                "feather": "Save", 
+                "primary": True, 
+                "hasText": True, 
+                "alwaysOn": True, 
+                "commands": ["submit"],
+                "style": {"top": "0.46rem", "right": "0.4rem"} 
+            }
+        ]
             
         editor_options = {
             "showGutter": True,
@@ -364,32 +367,43 @@ with t_code:
             key=dynamic_key
         )
         
-        # [FIX] Robust Save Check
-        # 1. Check if the event type is specifically 'submit' (The Save Button)
-        is_submit = resp.get("type") == "submit" if resp else False
-        
-        # 2. Also check if text just changed (Auto-sync)
-        text_changed = False
-        if resp:
-            latest_text = resp['text'] if 'text' in resp else ""
-            if latest_text and latest_text != st.session_state.get("editor_content"):
-                text_changed = True
-
-        # EXECUTE SAVE
-        if is_submit or text_changed:
+        if resp and resp.get("type") == "submit":
+            # Which button was clicked?
+            btn_clicked = resp.get("button", {}).get("name", "Save")
+            latest_text = resp.get("text", "")
+            
             try:
-                code_text = resp['text']
-                js = json.loads(code_text)
-                st.session_state["flow_json"] = clean_flow_logic(js["definition"] if "definition" in js else js)
-                st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+                # Common: Parse JSON
+                js = json.loads(latest_text)
+                clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
                 
-                if is_submit:
+                # --- LOGIC PER BUTTON ---
+                
+                if btn_clicked == "Validate":
+                    # If we got here, json.loads succeeded
+                    st.toast("✅ Valid JSON!", icon="✨")
+                
+                elif btn_clicked == "Prettify":
+                    # Re-dump with indent=2
+                    formatted_json = json.dumps(clean_js, indent=2)
+                    st.session_state["flow_json"] = clean_js
+                    st.session_state["editor_content"] = formatted_json
+                    st.session_state["editor_key"] += 1 # Force editor reload
+                    st.toast("Code Formatted!", icon="🎨")
+                    time.sleep(0.5)
+                    safe_rerun()
+
+                elif btn_clicked == "Save":
+                    st.session_state["flow_json"] = clean_js
+                    st.session_state["editor_content"] = json.dumps(clean_js, indent=2)
                     st.toast("Code Saved!", icon="💾")
                     time.sleep(0.5)
                     safe_rerun()
+
+            except json.JSONDecodeError as e:
+                st.error(f"❌ JSON Syntax Error: {e}")
             except Exception as e:
-                # If auto-sync fails, ignore. If manual save fails, show error.
-                if is_submit: st.error(f"Invalid JSON: {str(e)}")
+                st.error(f"❌ Error: {e}")
 
     else:
         # Fallback Text Area
@@ -528,16 +542,11 @@ with t_dep:
         default_int = f"zis_playground_{sub.lower().strip()}"
         
         with st.container(border=True):
-            # 2. Allow editing, but pre-fill with the Playground name
-            # This keeps it safe for beginners while unlocking it for experts.
             raw_int_name = st.text_input(
                 "Target Integration Name", 
                 value=default_int, 
                 help="Keep the default for testing, or change it for production deployment."
             )
-            
-            # 3. Sanitize the user input (Safety Check)
-            # Ensures "My Integration" becomes "my_integration" so the API doesn't error.
             target_int = raw_int_name.lower().strip().replace(" ", "_")
             
             bun_name = st.text_input("Bundle Name", value=st.session_state.get("current_bundle_name", "my_new_flow"))
@@ -545,9 +554,6 @@ with t_dep:
             if st.button("Deploy Bundle", type="primary"):
                 with st.status("Deploying...", expanded=True) as status:
                     try:
-                        # Step A: Ensure the Integration Exists
-                        # This works for both Playground AND custom names.
-                        # If it doesn't exist, ZIS will create it here.
                         status.write(f"Checking integration: {target_int}...")
                         requests.post(
                             f"{get_base_url()}/integrations", 
@@ -556,7 +562,6 @@ with t_dep:
                             headers={"Content-Type": "application/json"}
                         )
                         
-                        # Step B: Prepare the Bundle
                         safe_bun = bun_name.lower().replace("-", "_").replace(" ", "")
                         res_name = f"{safe_bun}_flow"
                         clean_def = clean_flow_logic(st.session_state["flow_json"])
@@ -572,7 +577,6 @@ with t_dep:
                             }
                         }
                         
-                        # Step C: Upload
                         r = requests.post(
                             f"{get_base_url()}/{target_int}/bundles", 
                             auth=get_auth(), 
@@ -589,11 +593,10 @@ with t_dep:
                             st.error(r.text)
                     except Exception as e: st.error(str(e))
 
-# --- TAB 5: DEBUG (SPLIT LAYOUT) ---
+# --- TAB 5: DEBUG (COLORED LOGS) ---
 with t_deb:
     col_input, col_graph = st.columns([1, 1])
 
-    # Left Column: Inputs & Outputs
     with col_input:
         st.markdown("### Input")
         inp = st.text_area("JSON Input", '{"ticket": {"id": 123}}', height=200, key="debug_input")
@@ -613,14 +616,21 @@ with t_deb:
             c_log, c_ctx = st.columns(2)
             with c_log:
                 with st.expander("Logs", expanded=True):
-                    for l in logs: st.text(l)
+                    # [NEW] Colored Log Logic
+                    for l in logs:
+                        if "(ERROR)" in l:
+                            st.error(l, icon="❌")
+                        elif "(SUCCESS)" in l:
+                            st.success(l, icon="✅")
+                        elif "(WARNING)" in l:
+                            st.warning(l, icon="⚠️")
+                        else:
+                            st.text(l)
             with c_ctx:
                 with st.expander("Context", expanded=True):
                     st.json(ctx)
 
-    # Right Column: Visual Trace
     with col_graph:
         st.markdown("### Visual Trace")
-        # If simulation ran, pass path. Else, just show current flow.
         current_path = st.session_state["debug_res"][2] if "debug_res" in st.session_state else None
         render_flow_graph(st.session_state["flow_json"], current_path)
