@@ -330,12 +330,13 @@ with t_imp:
                             if not found: st.warning("No Flow resource found.")
                         else: st.error("Fetch failed. Please check permissions.")
 
-# --- TAB 2: CODE (SYNC FIX) ---
+# --- TAB 2: CODE (SYNC LOGIC FIXED) ---
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
         col_tool, _ = st.columns([1, 10])
         with col_tool:
+            # External Save Button
             save_clicked = st.button("💾 Save Changes", type="primary", key="save_btn_external")
             
         editor_options = {
@@ -346,7 +347,7 @@ with t_code:
             "fontFamily": "monospace"
         }
         
-        # [FIX] Get response from editor
+        # Get response from editor
         resp = code_editor(
             st.session_state.get("editor_content", ""), 
             lang="json", 
@@ -355,28 +356,39 @@ with t_code:
             key=dynamic_key
         )
         
-        # [FIX] Logic to sync Visual Flow on ANY valid change, not just "Save"
+        # EXTRACT CURRENT TEXT
+        current_text = ""
         if resp:
-            code_text = resp['text'] if isinstance(resp, dict) and 'text' in resp else resp
-            
-            # Check if text actually changed from what we have in memory
-            if code_text and code_text != st.session_state["editor_content"]:
-                try:
-                    # Try parsing
-                    js = json.loads(code_text)
-                    # If valid, Update State immediately
-                    st.session_state["flow_json"] = clean_flow_logic(js["definition"] if "definition" in js else js)
-                    st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-                    
-                    # If it was an explicit Save click, show toast
-                    if save_clicked or (isinstance(resp, dict) and resp.get('type') == "submit"):
-                        st.toast("Code Saved", icon="💾"); 
-                        safe_rerun()
-                except: 
-                    # If JSON is invalid while typing, we just don't update the visual flow yet
-                    pass
+            current_text = resp['text'] if isinstance(resp, dict) and 'text' in resp else resp
+
+        # LOGIC 1: Auto-Sync (Updates Visuals silently if text is valid)
+        if current_text and current_text != st.session_state.get("editor_content"):
+            try:
+                js = json.loads(current_text)
+                st.session_state["flow_json"] = clean_flow_logic(js["definition"] if "definition" in js else js)
+                st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+            except: 
+                pass # Ignored invalid JSON during typing
+
+        # LOGIC 2: Manual Save (Updates Visuals Forcefully + Toast + Rerun)
+        # We check this INDEPENDENTLY so even if text didn't change "just now", save still works.
+        if save_clicked:
+            try:
+                # Use current_text if available, otherwise fallback to session state
+                txt_to_save = current_text if current_text else st.session_state.get("editor_content", "")
+                js = json.loads(txt_to_save)
+                
+                st.session_state["flow_json"] = clean_flow_logic(js["definition"] if "definition" in js else js)
+                st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+                
+                st.toast("Code Saved & Visuals Updated!", icon="💾")
+                time.sleep(0.5)
+                safe_rerun()
+            except Exception as e:
+                st.error(f"Invalid JSON: {str(e)}")
 
     else:
+        # Fallback Text Area
         txt = st.text_area("JSON", st.session_state.get("editor_content", ""), height=500, key=dynamic_key)
         if st.button("Save", key="save_text"):
             try:
