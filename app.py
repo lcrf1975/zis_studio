@@ -90,7 +90,6 @@ class ZISFlowEngine:
         self.visited_states = []
 
     def log(self, step, message, status="INFO"):
-        # We store status separately in the string so we can parse it later for colors
         entry = f"[{time.strftime('%H:%M:%S')}] {step}: {message} ({status})"
         self.logs.append(entry)
 
@@ -312,13 +311,11 @@ with t_imp:
                             if not found: st.warning("No Flow resource found.")
                         else: st.error("Fetch failed. Please check permissions.")
 
-# --- TAB 2: CODE (VALIDATE & PRETTIFY) ---
+# --- TAB 2: CODE (PRETTIFY FIX) ---
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
         
-        # [NEW BUTTONS] Added Validate (check) and Prettify (command)
-        # All use "submit" to ensure we get the latest text content in the response
         btn_settings = [
             {
                 "name": "Validate",
@@ -327,7 +324,7 @@ with t_code:
                 "hasText": True,
                 "alwaysOn": True,
                 "commands": ["submit"],
-                "style": {"top": "0.46rem", "right": "8rem"} 
+                "style": {"top": "0.46rem", "right": "13rem"} 
             },
             {
                 "name": "Prettify",
@@ -336,7 +333,7 @@ with t_code:
                 "hasText": True,
                 "alwaysOn": True,
                 "commands": ["submit"],
-                "style": {"top": "0.46rem", "right": "4.2rem"} 
+                "style": {"top": "0.46rem", "right": "6.5rem"} 
             },
             {
                 "name": "Save", 
@@ -357,7 +354,6 @@ with t_code:
             "fontFamily": "monospace"
         }
         
-        # Render Editor
         resp = code_editor(
             st.session_state.get("editor_content", ""), 
             lang="json", 
@@ -368,30 +364,31 @@ with t_code:
         )
         
         if resp and resp.get("type") == "submit":
-            # Which button was clicked?
             btn_clicked = resp.get("button", {}).get("name", "Save")
             latest_text = resp.get("text", "")
             
             try:
-                # Common: Parse JSON
                 js = json.loads(latest_text)
                 clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
                 
-                # --- LOGIC PER BUTTON ---
-                
                 if btn_clicked == "Validate":
-                    # If we got here, json.loads succeeded
                     st.toast("✅ Valid JSON!", icon="✨")
                 
                 elif btn_clicked == "Prettify":
-                    # Re-dump with indent=2
-                    formatted_json = json.dumps(clean_js, indent=2)
-                    st.session_state["flow_json"] = clean_js
-                    st.session_state["editor_content"] = formatted_json
-                    st.session_state["editor_key"] += 1 # Force editor reload
-                    st.toast("Code Formatted!", icon="🎨")
-                    time.sleep(0.5)
-                    safe_rerun()
+                    # [FIX] Simplified Prettify Logic
+                    # Format exactly what is in the editor (js), don't clean/delete keys
+                    formatted_json = json.dumps(js, indent=2)
+                    
+                    if formatted_json != latest_text:
+                        st.session_state["editor_content"] = formatted_json
+                        # Also sync visual state just in case
+                        st.session_state["flow_json"] = clean_js
+                        st.session_state["editor_key"] += 1 
+                        st.toast("Code Formatted!", icon="🎨")
+                        time.sleep(0.5)
+                        safe_rerun()
+                    else:
+                        st.toast("Already formatted!", icon="✨")
 
                 elif btn_clicked == "Save":
                     st.session_state["flow_json"] = clean_js
@@ -537,8 +534,6 @@ with t_dep:
     else:
         st.markdown("### 🚀 Deploy to ZIS")
         sub = st.session_state.get("zd_subdomain", "sub")
-        
-        # 1. Define the Default (Beginner) Name
         default_int = f"zis_playground_{sub.lower().strip()}"
         
         with st.container(border=True):
@@ -548,7 +543,6 @@ with t_dep:
                 help="Keep the default for testing, or change it for production deployment."
             )
             target_int = raw_int_name.lower().strip().replace(" ", "_")
-            
             bun_name = st.text_input("Bundle Name", value=st.session_state.get("current_bundle_name", "my_new_flow"))
             
             if st.button("Deploy Bundle", type="primary"):
@@ -561,11 +555,9 @@ with t_dep:
                             json={"name": target_int, "display_name": target_int}, 
                             headers={"Content-Type": "application/json"}
                         )
-                        
                         safe_bun = bun_name.lower().replace("-", "_").replace(" ", "")
                         res_name = f"{safe_bun}_flow"
                         clean_def = clean_flow_logic(st.session_state["flow_json"])
-                        
                         payload = {
                             "zis_template_version": "2019-10-14", 
                             "name": safe_bun,
@@ -576,14 +568,12 @@ with t_dep:
                                 }
                             }
                         }
-                        
                         r = requests.post(
                             f"{get_base_url()}/{target_int}/bundles", 
                             auth=get_auth(), 
                             json=payload, 
                             headers={"Content-Type": "application/json"}
                         )
-                        
                         if r.status_code in [200, 201]:
                             st.balloons()
                             status.update(label="Deployment Successful!", state="complete")
@@ -600,7 +590,6 @@ with t_deb:
     with col_input:
         st.markdown("### Input")
         inp = st.text_area("JSON Input", '{"ticket": {"id": 123}}', height=200, key="debug_input")
-        
         if st.button("▶️ Run Simulation", type="primary", key="btn_run_debug"):
             eng = ZISFlowEngine(st.session_state["flow_json"], json.loads(inp), {}, {})
             logs, ctx, path = eng.run()
@@ -612,20 +601,14 @@ with t_deb:
             st.markdown("### Output")
             logs, ctx, path = st.session_state["debug_res"]
             
-            # Logs & Context
             c_log, c_ctx = st.columns(2)
             with c_log:
                 with st.expander("Logs", expanded=True):
-                    # [NEW] Colored Log Logic
                     for l in logs:
-                        if "(ERROR)" in l:
-                            st.error(l, icon="❌")
-                        elif "(SUCCESS)" in l:
-                            st.success(l, icon="✅")
-                        elif "(WARNING)" in l:
-                            st.warning(l, icon="⚠️")
-                        else:
-                            st.text(l)
+                        if "(ERROR)" in l: st.error(l, icon="❌")
+                        elif "(SUCCESS)" in l: st.success(l, icon="✅")
+                        elif "(WARNING)" in l: st.warning(l, icon="⚠️")
+                        else: st.text(l)
             with c_ctx:
                 with st.expander("Context", expanded=True):
                     st.json(ctx)
