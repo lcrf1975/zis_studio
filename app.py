@@ -218,6 +218,7 @@ def render_flow_graph(flow_def, highlight_path=None):
                 dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
                 dot.edge(k, "END")
         
+        # [FIX] Render without expanding to full container width
         st.graphviz_chart(dot) 
     except: pass
 
@@ -329,12 +330,12 @@ with t_imp:
                             if not found: st.warning("No Flow resource found.")
                         else: st.error("Fetch failed. Please check permissions.")
 
-# --- TAB 2: CODE (INTERNAL BUTTON FIX) ---
+# --- TAB 2: CODE (SAVE FIX) ---
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
         
-        # [FIX] Button is INTERNAL now, but moved to Right side via 'style'
+        # [FIX] Internal Button Config
         btn_settings = [{
             "name": "Save", 
             "feather": "Save", 
@@ -342,7 +343,7 @@ with t_code:
             "hasText": True, 
             "alwaysOn": True, 
             "commands": ["submit"],
-            "style": {"top": "0.46rem", "right": "0.4rem"} # <--- Moves Button to Top Right Corner
+            "style": {"top": "0.46rem", "right": "0.4rem"} 
         }]
             
         editor_options = {
@@ -359,25 +360,36 @@ with t_code:
             lang="json", 
             height=500, 
             options=editor_options, 
-            buttons=btn_settings, # <--- Added back internal buttons
+            buttons=btn_settings, 
             key=dynamic_key
         )
         
-        # [FIX] Logic to handle Save (Submit)
-        if resp and len(resp.get('buttons', [])) > 0:
-            # Code Editor returns a 'buttons' list when a button is clicked
-            # We check if *any* button was clicked (we only have one)
+        # [FIX] Robust Save Check
+        # 1. Check if the event type is specifically 'submit' (The Save Button)
+        is_submit = resp.get("type") == "submit" if resp else False
+        
+        # 2. Also check if text just changed (Auto-sync)
+        text_changed = False
+        if resp:
+            latest_text = resp['text'] if 'text' in resp else ""
+            if latest_text and latest_text != st.session_state.get("editor_content"):
+                text_changed = True
+
+        # EXECUTE SAVE
+        if is_submit or text_changed:
             try:
                 code_text = resp['text']
                 js = json.loads(code_text)
                 st.session_state["flow_json"] = clean_flow_logic(js["definition"] if "definition" in js else js)
                 st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
                 
-                st.toast("Code Saved!", icon="💾")
-                time.sleep(0.5)
-                safe_rerun()
+                if is_submit:
+                    st.toast("Code Saved!", icon="💾")
+                    time.sleep(0.5)
+                    safe_rerun()
             except Exception as e:
-                st.error(f"Invalid JSON: {str(e)}")
+                # If auto-sync fails, ignore. If manual save fails, show error.
+                if is_submit: st.error(f"Invalid JSON: {str(e)}")
 
     else:
         # Fallback Text Area
