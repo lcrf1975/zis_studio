@@ -523,33 +523,67 @@ with t_dep:
     else:
         st.markdown("### 🚀 Deploy to ZIS")
         sub = st.session_state.get("zd_subdomain", "sub")
-        valid_int = f"zis_playground_{sub.lower().strip()}"
+        
+        # 1. Define the Default (Beginner) Name
+        default_int = f"zis_playground_{sub.lower().strip()}"
         
         with st.container(border=True):
-            st.info(f"Target Integration: **{valid_int}**")
+            # 2. Allow editing, but pre-fill with the Playground name
+            # This keeps it safe for beginners while unlocking it for experts.
+            raw_int_name = st.text_input(
+                "Target Integration Name", 
+                value=default_int, 
+                help="Keep the default for testing, or change it for production deployment."
+            )
+            
+            # 3. Sanitize the user input (Safety Check)
+            # Ensures "My Integration" becomes "my_integration" so the API doesn't error.
+            target_int = raw_int_name.lower().strip().replace(" ", "_")
+            
             bun_name = st.text_input("Bundle Name", value=st.session_state.get("current_bundle_name", "my_new_flow"))
             
             if st.button("Deploy Bundle", type="primary"):
                 with st.status("Deploying...", expanded=True) as status:
                     try:
-                        requests.post(f"{get_base_url()}/integrations", auth=get_auth(), json={"name": valid_int, "display_name": valid_int}, headers={"Content-Type": "application/json"})
-                        status.write("Integration checked.")
+                        # Step A: Ensure the Integration Exists
+                        # This works for both Playground AND custom names.
+                        # If it doesn't exist, ZIS will create it here.
+                        status.write(f"Checking integration: {target_int}...")
+                        requests.post(
+                            f"{get_base_url()}/integrations", 
+                            auth=get_auth(), 
+                            json={"name": target_int, "display_name": target_int}, 
+                            headers={"Content-Type": "application/json"}
+                        )
                         
+                        # Step B: Prepare the Bundle
                         safe_bun = bun_name.lower().replace("-", "_").replace(" ", "")
                         res_name = f"{safe_bun}_flow"
                         clean_def = clean_flow_logic(st.session_state["flow_json"])
                         
                         payload = {
-                            "zis_template_version": "2019-10-14", "name": safe_bun,
-                            "resources": {res_name: {"type": "ZIS::Flow", "properties": {"name": res_name, "definition": clean_def}}}
+                            "zis_template_version": "2019-10-14", 
+                            "name": safe_bun,
+                            "resources": {
+                                res_name: {
+                                    "type": "ZIS::Flow", 
+                                    "properties": {"name": res_name, "definition": clean_def}
+                                }
+                            }
                         }
                         
-                        r = requests.post(f"{get_base_url()}/{valid_int}/bundles", auth=get_auth(), json=payload, headers={"Content-Type": "application/json"})
+                        # Step C: Upload
+                        r = requests.post(
+                            f"{get_base_url()}/{target_int}/bundles", 
+                            auth=get_auth(), 
+                            json=payload, 
+                            headers={"Content-Type": "application/json"}
+                        )
                         
                         if r.status_code in [200, 201]:
                             st.balloons()
                             status.update(label="Deployment Successful!", state="complete")
-                            st.success(f"Deployed **{safe_bun}**")
+                            st.success(f"Deployed **{safe_bun}** to integration **{target_int}**")
                         else:
                             status.update(label="Deployment Failed", state="error")
                             st.error(r.text)
