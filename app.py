@@ -182,7 +182,7 @@ def render_flow_graph(flow_def, highlight_path=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
         dot = graphviz.Digraph(comment='ZIS Flow')
-        # [FIX] Enforce tight layout (removed use_container_width logic in chart call)
+        # [FIX] Enforce tight layout
         dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
         
         # Base Node Style
@@ -218,7 +218,6 @@ def render_flow_graph(flow_def, highlight_path=None):
                 dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
                 dot.edge(k, "END")
         
-        # [FIX] Render without expanding to full container width
         st.graphviz_chart(dot) 
     except: pass
 
@@ -330,13 +329,21 @@ with t_imp:
                             if not found: st.warning("No Flow resource found.")
                         else: st.error("Fetch failed. Please check permissions.")
 
-# --- TAB 2: CODE (ROBUST SAVE FIX) ---
+# --- TAB 2: CODE (INTERNAL BUTTON FIX) ---
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
-        col_tool, _ = st.columns([1, 10])
-        with col_tool:
-            save_clicked = st.button("💾 Save Changes", type="primary", key="save_btn_external")
+        
+        # [FIX] Button is INTERNAL now, but moved to Right side via 'style'
+        btn_settings = [{
+            "name": "Save", 
+            "feather": "Save", 
+            "primary": True, 
+            "hasText": True, 
+            "alwaysOn": True, 
+            "commands": ["submit"],
+            "style": {"top": "0.46rem", "right": "0.4rem"} # <--- Moves Button to Top Right Corner
+        }]
             
         editor_options = {
             "showGutter": True,
@@ -352,43 +359,21 @@ with t_code:
             lang="json", 
             height=500, 
             options=editor_options, 
+            buttons=btn_settings, # <--- Added back internal buttons
             key=dynamic_key
         )
         
-        # [CRITICAL FIX]
-        # Always try to grab the LATEST state from the widget directly if available
-        # st.session_state[dynamic_key] often holds the raw state of the component
-        
-        raw_state = st.session_state.get(dynamic_key, {})
-        latest_text = ""
-        
-        # Priority 1: Check the raw widget state directly (Most accurate on button click)
-        if isinstance(raw_state, dict) and "text" in raw_state:
-            latest_text = raw_state["text"]
-        # Priority 2: Check the response object
-        elif resp:
-            latest_text = resp['text'] if isinstance(resp, dict) and 'text' in resp else resp
-
-        # Logic 1: Auto-Sync (Silent)
-        if latest_text and latest_text != st.session_state.get("editor_content"):
+        # [FIX] Logic to handle Save (Submit)
+        if resp and len(resp.get('buttons', [])) > 0:
+            # Code Editor returns a 'buttons' list when a button is clicked
+            # We check if *any* button was clicked (we only have one)
             try:
-                js = json.loads(latest_text)
-                st.session_state["flow_json"] = clean_flow_logic(js["definition"] if "definition" in js else js)
-                st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-            except: 
-                pass 
-
-        # Logic 2: Manual Save (Robust)
-        if save_clicked:
-            try:
-                # If we have valid text from the widget, use it. Otherwise use what we have in memory.
-                txt_to_save = latest_text if latest_text else st.session_state.get("editor_content", "")
-                
-                js = json.loads(txt_to_save)
+                code_text = resp['text']
+                js = json.loads(code_text)
                 st.session_state["flow_json"] = clean_flow_logic(js["definition"] if "definition" in js else js)
                 st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
                 
-                st.toast("Code Saved & Visuals Updated!", icon="💾")
+                st.toast("Code Saved!", icon="💾")
                 time.sleep(0.5)
                 safe_rerun()
             except Exception as e:
