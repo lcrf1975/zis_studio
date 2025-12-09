@@ -311,32 +311,13 @@ with t_imp:
                             if not found: st.warning("No Flow resource found.")
                         else: st.error("Fetch failed. Please check permissions.")
 
-# --- TAB 2: CODE (PIXEL FIX & LOGIC) ---
+# --- TAB 2: CODE (CONSOLIDATED SAVE) ---
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
         
-        # [FIX] Use PIXELS (px) for safe distance
-        # Validate (Left) -> Prettify (Center) -> Save (Right)
+        # [MODIFIED] Only "Save" button remains
         btn_settings = [
-            {
-                "name": "Validate",
-                "feather": "CheckCircle",
-                "primary": False,
-                "hasText": True,
-                "alwaysOn": True,
-                "commands": ["submit"],
-                "style": {"top": "0.46rem", "right": "200px"} 
-            },
-            {
-                "name": "Prettify",
-                "feather": "AlignLeft",
-                "primary": False,
-                "hasText": True,
-                "alwaysOn": True,
-                "commands": ["submit"],
-                "style": {"top": "0.46rem", "right": "100px"} 
-            },
             {
                 "name": "Save", 
                 "feather": "Save", 
@@ -344,7 +325,7 @@ with t_code:
                 "hasText": True, 
                 "alwaysOn": True, 
                 "commands": ["submit"],
-                "style": {"top": "0.46rem", "right": "10px"} 
+                "style": {"top": "0.46rem", "right": "0.4rem"} 
             }
         ]
             
@@ -365,53 +346,50 @@ with t_code:
             key=dynamic_key
         )
         
-        # Handle Events
+        # Check if "Save" was clicked (type="submit")
         if resp and resp.get("type") == "submit":
-            # [FIX] Don't default to "Save" blindly. If button name is missing, assume it's a Ctrl+Enter save.
-            btn_clicked = resp.get("button", {}).get("name")
-            if not btn_clicked: 
-                btn_clicked = "Save" # Default only if generic submit
-            
             latest_text = resp.get("text", "")
             
             try:
+                # 1. VALIDATE: Parse JSON
                 js = json.loads(latest_text)
+                
+                # 2. PRETTIFY: Format with indent=2
                 clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
+                formatted_json = json.dumps(clean_js, indent=2)
                 
-                if btn_clicked == "Validate":
-                    st.toast("✅ Valid JSON!", icon="✨")
+                # 3. SAVE: Update State & Force Reload
+                st.session_state["flow_json"] = clean_js
+                st.session_state["editor_content"] = formatted_json
                 
-                elif btn_clicked == "Prettify":
-                    formatted_json = json.dumps(js, indent=2)
-                    # Even if text is same, we force reload to be sure visual state matches
-                    st.session_state["editor_content"] = formatted_json
-                    st.session_state["flow_json"] = clean_js
-                    st.session_state["editor_key"] += 1 
-                    st.toast("Code Formatted!", icon="🎨")
-                    time.sleep(0.5)
-                    safe_rerun()
-
-                elif btn_clicked == "Save":
-                    st.session_state["flow_json"] = clean_js
-                    st.session_state["editor_content"] = json.dumps(clean_js, indent=2)
-                    st.toast("Code Saved!", icon="💾")
-                    time.sleep(0.5)
-                    safe_rerun()
+                # We increment this key to force the editor to re-render with the pretty text
+                st.session_state["editor_key"] += 1 
+                
+                st.toast("Code Validated, Formatted & Saved!", icon="✅")
+                time.sleep(0.5)
+                safe_rerun()
 
             except json.JSONDecodeError as e:
-                st.error(f"❌ JSON Syntax Error: {e}")
+                # If validation fails, we do NOT save.
+                st.error(f"❌ Save Failed: Invalid JSON.\n\nError: {e}")
             except Exception as e:
                 st.error(f"❌ Error: {e}")
 
     else:
-        # Fallback
+        # Fallback Text Area
         txt = st.text_area("JSON", st.session_state.get("editor_content", ""), height=500, key=dynamic_key)
         if st.button("Save", key="save_text"):
             try:
                 js = json.loads(txt)
-                st.session_state["flow_json"] = clean_flow_logic(js["definition"] if "definition" in js else js)
-                st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-                st.toast("Saved", icon="💾"); time.sleep(0.2); safe_rerun()
+                clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
+                formatted = json.dumps(clean_js, indent=2)
+                
+                st.session_state["flow_json"] = clean_js
+                st.session_state["editor_content"] = formatted
+                
+                st.toast("Saved & Formatted", icon="💾")
+                time.sleep(0.2)
+                safe_rerun()
             except: st.error("Invalid JSON")
 
 # --- TAB 3: DESIGNER ---
