@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 import requests
+import time
 import re
 from requests.auth import HTTPBasicAuth
 from jsonpath_ng import parse 
@@ -20,11 +21,12 @@ try:
 except ImportError:
     HAS_EDITOR = False
 
-def safe_rerun():
-    try:
-        if hasattr(st, "rerun"): st.rerun()
-        elif hasattr(st, "experimental_rerun"): st.experimental_rerun()
-    except: pass
+# [FIX] Use modern rerun command for reliability
+def force_refresh():
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
 
 def clean_flow_logic(flow_data):
     clean = flow_data.copy()
@@ -52,7 +54,7 @@ st.markdown("""
         max-width: 600px;
     }
     
-    /* Optional: Hide the standard Streamlit header */
+    /* Hide standard header */
     header {visibility: hidden;}
     
     /* Adjust top padding */
@@ -335,7 +337,6 @@ with t_code:
             "fontFamily": "monospace"
         }
         
-        # Capture response
         resp = code_editor(
             st.session_state.get("editor_content", ""), 
             lang="json", 
@@ -345,29 +346,32 @@ with t_code:
             key=dynamic_key
         )
         
-        # [FIX] Always sync text state on any event
-        if resp and resp.get("text"):
-            st.session_state["editor_content"] = resp["text"]
-
-        # Handle Save Click
-        if resp and resp.get("type") == "submit":
+        # [CRITICAL FIX] Capture the text from the response immediately
+        # This fixes the "click twice" issue by trusting the submit event's payload
+        if resp and resp.get("type") == "submit" and "text" in resp:
+            latest_text = resp["text"]
+            
             try:
-                # 1. Get latest text (we already synced it above, but double check)
-                latest_text = resp.get("text", "")
-                
-                # 2. Parse & Format
+                # 1. Parse (Validate)
                 js = json.loads(latest_text)
+                
+                # 2. Format (Prettify)
                 clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
                 formatted_json = json.dumps(clean_js, indent=2)
                 
-                # 3. Update all states
-                st.session_state["flow_json"] = clean_js
-                st.session_state["editor_content"] = formatted_json
-                st.session_state["editor_key"] += 1  # Force editor to redraw with formatted text
+                # 3. Check for change
+                # We only increment the key (force reload) if the text actually changed during formatting.
+                # This stops unnecessary flickers.
+                if formatted_json != st.session_state.get("editor_content"):
+                    st.session_state["editor_content"] = formatted_json
+                    st.session_state["editor_key"] += 1
                 
-                # 4. Notify & Rerun (No sleep to ensure speed)
+                # 4. Sync Visuals
+                st.session_state["flow_json"] = clean_js
+                
+                # 5. Success & Rerun
                 st.toast("Code Validated, Formatted & Saved!", icon="✅")
-                safe_rerun()
+                force_refresh() # Using the new helper function
 
             except json.JSONDecodeError as e:
                 st.error(f"❌ Save Failed: Invalid JSON.\n\nError: {e}")
@@ -384,7 +388,7 @@ with t_code:
                 st.session_state["flow_json"] = clean_js
                 st.session_state["editor_content"] = formatted
                 st.toast("Saved & Formatted", icon="💾")
-                safe_rerun()
+                force_refresh()
             except: st.error("Invalid JSON")
 
 # --- TAB 3: DESIGNER ---
