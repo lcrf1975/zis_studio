@@ -311,11 +311,13 @@ with t_imp:
                             if not found: st.warning("No Flow resource found.")
                         else: st.error("Fetch failed. Please check permissions.")
 
-# --- TAB 2: CODE (PRETTIFY FIX) ---
+# --- TAB 2: CODE (PIXEL FIX & LOGIC) ---
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
         
+        # [FIX] Use PIXELS (px) for safe distance
+        # Validate (Left) -> Prettify (Center) -> Save (Right)
         btn_settings = [
             {
                 "name": "Validate",
@@ -324,7 +326,7 @@ with t_code:
                 "hasText": True,
                 "alwaysOn": True,
                 "commands": ["submit"],
-                "style": {"top": "0.46rem", "right": "13rem"} 
+                "style": {"top": "0.46rem", "right": "200px"} 
             },
             {
                 "name": "Prettify",
@@ -333,7 +335,7 @@ with t_code:
                 "hasText": True,
                 "alwaysOn": True,
                 "commands": ["submit"],
-                "style": {"top": "0.46rem", "right": "6.5rem"} 
+                "style": {"top": "0.46rem", "right": "100px"} 
             },
             {
                 "name": "Save", 
@@ -342,7 +344,7 @@ with t_code:
                 "hasText": True, 
                 "alwaysOn": True, 
                 "commands": ["submit"],
-                "style": {"top": "0.46rem", "right": "0.4rem"} 
+                "style": {"top": "0.46rem", "right": "10px"} 
             }
         ]
             
@@ -363,8 +365,13 @@ with t_code:
             key=dynamic_key
         )
         
+        # Handle Events
         if resp and resp.get("type") == "submit":
-            btn_clicked = resp.get("button", {}).get("name", "Save")
+            # [FIX] Don't default to "Save" blindly. If button name is missing, assume it's a Ctrl+Enter save.
+            btn_clicked = resp.get("button", {}).get("name")
+            if not btn_clicked: 
+                btn_clicked = "Save" # Default only if generic submit
+            
             latest_text = resp.get("text", "")
             
             try:
@@ -375,20 +382,14 @@ with t_code:
                     st.toast("✅ Valid JSON!", icon="✨")
                 
                 elif btn_clicked == "Prettify":
-                    # [FIX] Simplified Prettify Logic
-                    # Format exactly what is in the editor (js), don't clean/delete keys
                     formatted_json = json.dumps(js, indent=2)
-                    
-                    if formatted_json != latest_text:
-                        st.session_state["editor_content"] = formatted_json
-                        # Also sync visual state just in case
-                        st.session_state["flow_json"] = clean_js
-                        st.session_state["editor_key"] += 1 
-                        st.toast("Code Formatted!", icon="🎨")
-                        time.sleep(0.5)
-                        safe_rerun()
-                    else:
-                        st.toast("Already formatted!", icon="✨")
+                    # Even if text is same, we force reload to be sure visual state matches
+                    st.session_state["editor_content"] = formatted_json
+                    st.session_state["flow_json"] = clean_js
+                    st.session_state["editor_key"] += 1 
+                    st.toast("Code Formatted!", icon="🎨")
+                    time.sleep(0.5)
+                    safe_rerun()
 
                 elif btn_clicked == "Save":
                     st.session_state["flow_json"] = clean_js
@@ -403,7 +404,7 @@ with t_code:
                 st.error(f"❌ Error: {e}")
 
     else:
-        # Fallback Text Area
+        # Fallback
         txt = st.text_area("JSON", st.session_state.get("editor_content", ""), height=500, key=dynamic_key)
         if st.button("Save", key="save_text"):
             try:
