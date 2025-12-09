@@ -21,7 +21,7 @@ try:
 except ImportError:
     HAS_EDITOR = False
 
-# [FIX] Use modern rerun command for reliability
+# Use modern rerun command for reliability
 def force_refresh():
     if hasattr(st, "rerun"):
         st.rerun()
@@ -48,10 +48,20 @@ st.set_page_config(
 # [CSS OVERRIDES]
 st.markdown("""
 <style>
-    /* Widen the Sidebar */
+    /* 1. Widen the Sidebar */
     [data-testid="stSidebar"] {
         min-width: 450px;
         max-width: 600px;
+    }
+    
+    /* 2. LOCK SIDEBAR OPEN (Disable Close Button) */
+    [data-testid="stSidebar"] button[kind="header"] {
+        display: none;
+    }
+    
+    /* 3. Hide the "Open Sidebar" arrow (just in case) */
+    [data-testid="collapsedControl"] {
+        display: none;
     }
     
     /* Hide standard header */
@@ -346,32 +356,23 @@ with t_code:
             key=dynamic_key
         )
         
-        # [CRITICAL FIX] Capture the text from the response immediately
-        # This fixes the "click twice" issue by trusting the submit event's payload
-        if resp and resp.get("type") == "submit" and "text" in resp:
-            latest_text = resp["text"]
-            
+        if resp and resp.get("text"):
+            st.session_state["editor_content"] = resp["text"]
+
+        if resp and resp.get("type") == "submit":
             try:
-                # 1. Parse (Validate)
+                latest_text = resp.get("text", "")
                 js = json.loads(latest_text)
-                
-                # 2. Format (Prettify)
                 clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
                 formatted_json = json.dumps(clean_js, indent=2)
                 
-                # 3. Check for change
-                # We only increment the key (force reload) if the text actually changed during formatting.
-                # This stops unnecessary flickers.
                 if formatted_json != st.session_state.get("editor_content"):
                     st.session_state["editor_content"] = formatted_json
                     st.session_state["editor_key"] += 1
                 
-                # 4. Sync Visuals
                 st.session_state["flow_json"] = clean_js
-                
-                # 5. Success & Rerun
                 st.toast("Code Validated, Formatted & Saved!", icon="✅")
-                force_refresh() # Using the new helper function
+                force_refresh()
 
             except json.JSONDecodeError as e:
                 st.error(f"❌ Save Failed: Invalid JSON.\n\nError: {e}")
