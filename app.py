@@ -315,8 +315,6 @@ with t_imp:
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
-        
-        # [MODIFIED] Only "Save" button remains
         btn_settings = [
             {
                 "name": "Save", 
@@ -346,50 +344,32 @@ with t_code:
             key=dynamic_key
         )
         
-        # Check if "Save" was clicked (type="submit")
         if resp and resp.get("type") == "submit":
             latest_text = resp.get("text", "")
-            
             try:
-                # 1. VALIDATE: Parse JSON
                 js = json.loads(latest_text)
-                
-                # 2. PRETTIFY: Format with indent=2
                 clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
                 formatted_json = json.dumps(clean_js, indent=2)
-                
-                # 3. SAVE: Update State & Force Reload
                 st.session_state["flow_json"] = clean_js
                 st.session_state["editor_content"] = formatted_json
-                
-                # We increment this key to force the editor to re-render with the pretty text
                 st.session_state["editor_key"] += 1 
-                
                 st.toast("Code Validated, Formatted & Saved!", icon="✅")
-                time.sleep(0.5)
-                safe_rerun()
-
+                time.sleep(0.5); safe_rerun()
             except json.JSONDecodeError as e:
-                # If validation fails, we do NOT save.
                 st.error(f"❌ Save Failed: Invalid JSON.\n\nError: {e}")
             except Exception as e:
                 st.error(f"❌ Error: {e}")
 
     else:
-        # Fallback Text Area
         txt = st.text_area("JSON", st.session_state.get("editor_content", ""), height=500, key=dynamic_key)
         if st.button("Save", key="save_text"):
             try:
                 js = json.loads(txt)
                 clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
                 formatted = json.dumps(clean_js, indent=2)
-                
                 st.session_state["flow_json"] = clean_js
                 st.session_state["editor_content"] = formatted
-                
-                st.toast("Saved & Formatted", icon="💾")
-                time.sleep(0.2)
-                safe_rerun()
+                st.toast("Saved & Formatted", icon="💾"); time.sleep(0.2); safe_rerun()
             except: st.error("Invalid JSON")
 
 # --- TAB 3: DESIGNER ---
@@ -516,11 +496,7 @@ with t_dep:
         default_int = f"zis_playground_{sub.lower().strip()}"
         
         with st.container(border=True):
-            raw_int_name = st.text_input(
-                "Target Integration Name", 
-                value=default_int, 
-                help="Keep the default for testing, or change it for production deployment."
-            )
+            raw_int_name = st.text_input("Target Integration Name", value=default_int, help="Keep the default for testing, or change it for production deployment.")
             target_int = raw_int_name.lower().strip().replace(" ", "_")
             bun_name = st.text_input("Bundle Name", value=st.session_state.get("current_bundle_name", "my_new_flow"))
             
@@ -528,41 +504,19 @@ with t_dep:
                 with st.status("Deploying...", expanded=True) as status:
                     try:
                         status.write(f"Checking integration: {target_int}...")
-                        requests.post(
-                            f"{get_base_url()}/integrations", 
-                            auth=get_auth(), 
-                            json={"name": target_int, "display_name": target_int}, 
-                            headers={"Content-Type": "application/json"}
-                        )
+                        requests.post(f"{get_base_url()}/integrations", auth=get_auth(), json={"name": target_int, "display_name": target_int}, headers={"Content-Type": "application/json"})
                         safe_bun = bun_name.lower().replace("-", "_").replace(" ", "")
                         res_name = f"{safe_bun}_flow"
                         clean_def = clean_flow_logic(st.session_state["flow_json"])
-                        payload = {
-                            "zis_template_version": "2019-10-14", 
-                            "name": safe_bun,
-                            "resources": {
-                                res_name: {
-                                    "type": "ZIS::Flow", 
-                                    "properties": {"name": res_name, "definition": clean_def}
-                                }
-                            }
-                        }
-                        r = requests.post(
-                            f"{get_base_url()}/{target_int}/bundles", 
-                            auth=get_auth(), 
-                            json=payload, 
-                            headers={"Content-Type": "application/json"}
-                        )
+                        payload = {"zis_template_version": "2019-10-14", "name": safe_bun, "resources": {res_name: {"type": "ZIS::Flow", "properties": {"name": res_name, "definition": clean_def}}}}
+                        r = requests.post(f"{get_base_url()}/{target_int}/bundles", auth=get_auth(), json=payload, headers={"Content-Type": "application/json"})
                         if r.status_code in [200, 201]:
-                            st.balloons()
-                            status.update(label="Deployment Successful!", state="complete")
-                            st.success(f"Deployed **{safe_bun}** to integration **{target_int}**")
+                            st.balloons(); status.update(label="Deployment Successful!", state="complete"); st.success(f"Deployed **{safe_bun}** to integration **{target_int}**")
                         else:
-                            status.update(label="Deployment Failed", state="error")
-                            st.error(r.text)
+                            status.update(label="Deployment Failed", state="error"); st.error(r.text)
                     except Exception as e: st.error(str(e))
 
-# --- TAB 5: DEBUG (COLORED LOGS) ---
+# --- TAB 5: DEBUG (STACKED LAYOUT) ---
 with t_deb:
     col_input, col_graph = st.columns([1, 1])
 
@@ -580,17 +534,16 @@ with t_deb:
             st.markdown("### Output")
             logs, ctx, path = st.session_state["debug_res"]
             
-            c_log, c_ctx = st.columns(2)
-            with c_log:
-                with st.expander("Logs", expanded=True):
-                    for l in logs:
-                        if "(ERROR)" in l: st.error(l, icon="❌")
-                        elif "(SUCCESS)" in l: st.success(l, icon="✅")
-                        elif "(WARNING)" in l: st.warning(l, icon="⚠️")
-                        else: st.text(l)
-            with c_ctx:
-                with st.expander("Context", expanded=True):
-                    st.json(ctx)
+            # STACKED LOGS AND CONTEXT (No more sub-columns)
+            with st.expander("Logs", expanded=True):
+                for l in logs:
+                    if "(ERROR)" in l: st.error(l, icon="❌")
+                    elif "(SUCCESS)" in l: st.success(l, icon="✅")
+                    elif "(WARNING)" in l: st.warning(l, icon="⚠️")
+                    else: st.text(l)
+            
+            with st.expander("Context", expanded=True):
+                st.json(ctx)
 
     with col_graph:
         st.markdown("### Visual Trace")
