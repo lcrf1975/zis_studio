@@ -182,6 +182,7 @@ def render_flow_graph(flow_def, highlight_path=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
         dot = graphviz.Digraph(comment='ZIS Flow')
+        # [FIX] Removed 'use_container_width' later, but here we enforce tighter layout
         dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
         
         # Base Node Style
@@ -217,7 +218,8 @@ def render_flow_graph(flow_def, highlight_path=None):
                 dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
                 dot.edge(k, "END")
         
-        st.graphviz_chart(dot, use_container_width=True)
+        # [FIX] Removed 'use_container_width=True' so small graphs don't explode in size
+        st.graphviz_chart(dot) 
     except: pass
 
 # ==========================================
@@ -328,7 +330,7 @@ with t_imp:
                             if not found: st.warning("No Flow resource found.")
                         else: st.error("Fetch failed. Please check permissions.")
 
-# --- TAB 2: CODE ---
+# --- TAB 2: CODE (SYNC FIX) ---
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
@@ -344,6 +346,7 @@ with t_code:
             "fontFamily": "monospace"
         }
         
+        # [FIX] Get response from editor
         resp = code_editor(
             st.session_state.get("editor_content", ""), 
             lang="json", 
@@ -352,15 +355,27 @@ with t_code:
             key=dynamic_key
         )
         
-        if save_clicked or (resp.get('type') == "submit"):
-            try:
-                code_text = resp['text'] if isinstance(resp, dict) and 'text' in resp else resp
-                if code_text:
+        # [FIX] Logic to sync Visual Flow on ANY valid change, not just "Save"
+        if resp:
+            code_text = resp['text'] if isinstance(resp, dict) and 'text' in resp else resp
+            
+            # Check if text actually changed from what we have in memory
+            if code_text and code_text != st.session_state["editor_content"]:
+                try:
+                    # Try parsing
                     js = json.loads(code_text)
+                    # If valid, Update State immediately
                     st.session_state["flow_json"] = clean_flow_logic(js["definition"] if "definition" in js else js)
                     st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-                    st.toast("Code Saved", icon="💾"); time.sleep(0.2); safe_rerun()
-            except: st.error("Invalid JSON")
+                    
+                    # If it was an explicit Save click, show toast
+                    if save_clicked or (isinstance(resp, dict) and resp.get('type') == "submit"):
+                        st.toast("Code Saved", icon="💾"); 
+                        safe_rerun()
+                except: 
+                    # If JSON is invalid while typing, we just don't update the visual flow yet
+                    pass
+
     else:
         txt = st.text_area("JSON", st.session_state.get("editor_content", ""), height=500, key=dynamic_key)
         if st.button("Save", key="save_text"):
