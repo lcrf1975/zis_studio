@@ -48,19 +48,15 @@ st.set_page_config(
 # [CSS OVERRIDES]
 st.markdown("""
 <style>
-    /* 1. Widen the Sidebar */
+    /* Widen the Sidebar */
     [data-testid="stSidebar"] {
         min-width: 450px;
         max-width: 600px;
     }
     
-    /* 2. LOCK SIDEBAR OPEN (Disable Close Button) */
+    /* LOCK SIDEBAR OPEN (Disable Close Button only) */
+    /* We keep the 'Open' button visible so you can recover if it starts collapsed */
     [data-testid="stSidebar"] button[kind="header"] {
-        display: none;
-    }
-    
-    /* 3. Hide the "Open Sidebar" arrow (just in case) */
-    [data-testid="collapsedControl"] {
         display: none;
     }
     
