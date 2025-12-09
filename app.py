@@ -45,7 +45,6 @@ st.set_page_config(
 )
 
 # [CSS OVERRIDES]
-# Only keeping the Sidebar Width adjustment.
 st.markdown("""
 <style>
     /* Widen the Sidebar */
@@ -54,7 +53,7 @@ st.markdown("""
         max-width: 600px;
     }
     
-    /* Optional: Hide the standard Streamlit header for a cleaner look */
+    /* Optional: Hide the standard Streamlit header */
     header {visibility: hidden;}
     
     /* Adjust top padding */
@@ -176,7 +175,6 @@ def get_base_url():
 def test_connection():
     try:
         r = requests.get(f"https://{st.session_state.zd_subdomain}.zendesk.com/api/v2/users/me.json", auth=get_auth())
-        # Clean return message (emoji handled by toast)
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
@@ -186,22 +184,29 @@ def render_flow_graph(flow_def, highlight_path=None):
         dot = graphviz.Digraph(comment='ZIS Flow')
         dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
         
-        # Neutral colors that work in both Light and Dark mode
-        dot.attr('node', shape='box', style='rounded,filled', fillcolor='#f0f0f0', fontcolor='black', fontname='Arial', fontsize='12')
+        # Base Node Style
+        dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12')
         dot.attr('edge', color='#888888') 
         
         visited = set(highlight_path) if highlight_path else set()
         start = flow_def.get("StartAt")
+        
+        # START Node
         dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled")
         if start: dot.edge("START", start)
 
         for k, v in flow_def.get("States", {}).items():
-            fill = "#f0f0f0"
+            # [FIXED COLOR LOGIC]
+            # Default = Gray (Unused)
+            fill = "#e0e0e0" 
             pen = "1"
+            
+            # If Visited = Green
             if k in visited:
                 fill = "#C8E6C9" # Light Green
                 pen = "2"
-                if highlight_path and k == highlight_path[-1]: fill = "#81C784" # Darker Green
+                if highlight_path and k == highlight_path[-1]: 
+                    fill = "#81C784" # Darker Green for current/last step
             
             dot.node(k, f"{k}\n({v.get('Type')})", fillcolor=fill, penwidth=pen)
             
@@ -212,7 +217,7 @@ def render_flow_graph(flow_def, highlight_path=None):
                 dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
                 dot.edge(k, "END")
         
-        st.graphviz_chart(dot, use_container_width=True) # Full width graph
+        st.graphviz_chart(dot, use_container_width=True)
     except: pass
 
 # ==========================================
@@ -327,14 +332,34 @@ with t_imp:
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
-        btn_settings = [{"name": "Save", "feather": "Save", "primary": True, "hasText": True, "alwaysOn": True, "commands": ["submit"]}]
-        resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, buttons=btn_settings, key=dynamic_key)
-        if resp['type'] == "submit":
+        col_tool, _ = st.columns([1, 10])
+        with col_tool:
+            save_clicked = st.button("💾 Save Changes", type="primary", key="save_btn_external")
+            
+        editor_options = {
+            "showGutter": True,
+            "showLineNumbers": True,
+            "wrap": True,
+            "fontSize": 14,
+            "fontFamily": "monospace"
+        }
+        
+        resp = code_editor(
+            st.session_state.get("editor_content", ""), 
+            lang="json", 
+            height=500, 
+            options=editor_options, 
+            key=dynamic_key
+        )
+        
+        if save_clicked or (resp.get('type') == "submit"):
             try:
-                js = json.loads(resp['text'])
-                st.session_state["flow_json"] = clean_flow_logic(js["definition"] if "definition" in js else js)
-                st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-                st.toast("Code Saved", icon="💾"); time.sleep(0.2); safe_rerun()
+                code_text = resp['text'] if isinstance(resp, dict) and 'text' in resp else resp
+                if code_text:
+                    js = json.loads(code_text)
+                    st.session_state["flow_json"] = clean_flow_logic(js["definition"] if "definition" in js else js)
+                    st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+                    st.toast("Code Saved", icon="💾"); time.sleep(0.2); safe_rerun()
             except: st.error("Invalid JSON")
     else:
         txt = st.text_area("JSON", st.session_state.get("editor_content", ""), height=500, key=dynamic_key)
@@ -499,35 +524,38 @@ with t_dep:
                             st.error(r.text)
                     except Exception as e: st.error(str(e))
 
-# --- TAB 5: DEBUG (UPDATED) ---
+# --- TAB 5: DEBUG (SPLIT LAYOUT) ---
 with t_deb:
-    st.markdown("### Input")
-    # Input section now takes full width
-    inp = st.text_area("JSON Input", '{"ticket": {"id": 123}}', height=200, key="debug_input")
-    
-    if st.button("▶️ Run Simulation", type="primary", key="btn_run_debug"):
-        eng = ZISFlowEngine(st.session_state["flow_json"], json.loads(inp), {}, {})
-        logs, ctx, path = eng.run()
-        st.session_state["debug_res"] = (logs, ctx, path)
+    col_input, col_graph = st.columns([1, 1])
 
-    st.divider()
+    # Left Column: Inputs & Outputs
+    with col_input:
+        st.markdown("### Input")
+        inp = st.text_area("JSON Input", '{"ticket": {"id": 123}}', height=200, key="debug_input")
+        
+        if st.button("▶️ Run Simulation", type="primary", key="btn_run_debug"):
+            eng = ZISFlowEngine(st.session_state["flow_json"], json.loads(inp), {}, {})
+            logs, ctx, path = eng.run()
+            st.session_state["debug_res"] = (logs, ctx, path)
 
-    # Output Section (Below Input)
-    if "debug_res" in st.session_state:
-        st.markdown("### Output")
-        logs, ctx, path = st.session_state["debug_res"]
-        
-        # Display Logs and Context side-by-side to save vertical space
-        c_log, c_ctx = st.columns(2)
-        with c_log:
-            with st.expander("Logs", expanded=True):
-                for l in logs: st.text(l)
-        with c_ctx:
-            with st.expander("Context", expanded=False):
-                st.json(ctx)
-        
         st.divider()
-        
-        # Visual Trace (Below Output, Full Width/More Space)
+
+        if "debug_res" in st.session_state:
+            st.markdown("### Output")
+            logs, ctx, path = st.session_state["debug_res"]
+            
+            # Logs & Context
+            c_log, c_ctx = st.columns(2)
+            with c_log:
+                with st.expander("Logs", expanded=True):
+                    for l in logs: st.text(l)
+            with c_ctx:
+                with st.expander("Context", expanded=True):
+                    st.json(ctx)
+
+    # Right Column: Visual Trace
+    with col_graph:
         st.markdown("### Visual Trace")
-        render_flow_graph(st.session_state["flow_json"], path)
+        # If simulation ran, pass path. Else, just show current flow.
+        current_path = st.session_state["debug_res"][2] if "debug_res" in st.session_state else None
+        render_flow_graph(st.session_state["flow_json"], current_path)
