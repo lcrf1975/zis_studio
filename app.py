@@ -46,7 +46,6 @@ st.set_page_config(
 
 # [CSS OVERRIDES]
 # Only keeping the Sidebar Width adjustment.
-# We removed color overrides to let Streamlit's native Dark Mode work perfectly.
 st.markdown("""
 <style>
     /* Widen the Sidebar */
@@ -177,7 +176,7 @@ def get_base_url():
 def test_connection():
     try:
         r = requests.get(f"https://{st.session_state.zd_subdomain}.zendesk.com/api/v2/users/me.json", auth=get_auth())
-        # FIXED: Removed the emoji here so it doesn't duplicate in st.toast
+        # Clean return message (emoji handled by toast)
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
@@ -213,7 +212,7 @@ def render_flow_graph(flow_def, highlight_path=None):
                 dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
                 dot.edge(k, "END")
         
-        st.graphviz_chart(dot)
+        st.graphviz_chart(dot, use_container_width=True) # Full width graph
     except: pass
 
 # ==========================================
@@ -231,7 +230,7 @@ with st.sidebar:
             ok, msg = test_connection()
             if ok: 
                 st.session_state["is_connected"] = True
-                st.toast(msg, icon="✅") # Icon is set here
+                st.toast(msg, icon="✅") 
             else: 
                 st.toast(msg, icon="❌")
     
@@ -251,7 +250,7 @@ t_imp, t_code, t_vis, t_dep, t_deb = st.tabs([
     "🐞 Debugger"
 ])
 
-# --- TAB 1: IMPORT (STACKED) ---
+# --- TAB 1: IMPORT ---
 with t_imp:
     st.markdown("### 🔎 Find Existing Flows")
     
@@ -324,7 +323,7 @@ with t_imp:
                             if not found: st.warning("No Flow resource found.")
                         else: st.error("Fetch failed. Please check permissions.")
 
-# --- TAB 2: CODE (SMALLER) ---
+# --- TAB 2: CODE ---
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
@@ -500,23 +499,35 @@ with t_dep:
                             st.error(r.text)
                     except Exception as e: st.error(str(e))
 
-# --- TAB 5: DEBUG ---
+# --- TAB 5: DEBUG (UPDATED) ---
 with t_deb:
-    col_in, col_out = st.columns([1, 1])
-    with col_in:
-        st.subheader("Input")
-        inp = st.text_area("JSON Input", '{"ticket": {"id": 123}}', height=300)
-        if st.button("▶️ Run Simulation", type="primary"):
-            eng = ZISFlowEngine(st.session_state["flow_json"], json.loads(inp), {}, {})
-            logs, ctx, path = eng.run()
-            st.session_state["debug_res"] = (logs, ctx, path)
+    st.markdown("### Input")
+    # Input section now takes full width
+    inp = st.text_area("JSON Input", '{"ticket": {"id": 123}}', height=200, key="debug_input")
     
-    with col_out:
-        st.subheader("Output")
-        if "debug_res" in st.session_state:
-            logs, ctx, path = st.session_state["debug_res"]
+    if st.button("▶️ Run Simulation", type="primary", key="btn_run_debug"):
+        eng = ZISFlowEngine(st.session_state["flow_json"], json.loads(inp), {}, {})
+        logs, ctx, path = eng.run()
+        st.session_state["debug_res"] = (logs, ctx, path)
+
+    st.divider()
+
+    # Output Section (Below Input)
+    if "debug_res" in st.session_state:
+        st.markdown("### Output")
+        logs, ctx, path = st.session_state["debug_res"]
+        
+        # Display Logs and Context side-by-side to save vertical space
+        c_log, c_ctx = st.columns(2)
+        with c_log:
             with st.expander("Logs", expanded=True):
                 for l in logs: st.text(l)
-            with st.expander("Context"): st.json(ctx)
-            st.caption("Visual Trace:")
-            render_flow_graph(st.session_state["flow_json"], path)
+        with c_ctx:
+            with st.expander("Context", expanded=False):
+                st.json(ctx)
+        
+        st.divider()
+        
+        # Visual Trace (Below Output, Full Width/More Space)
+        st.markdown("### Visual Trace")
+        render_flow_graph(st.session_state["flow_json"], path)
