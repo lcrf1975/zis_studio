@@ -28,10 +28,17 @@ def force_refresh():
     else:
         st.experimental_rerun()
 
-# [NEW HELPER] Strip C-style comments (// or /* */) from JSON string
+# [FIX] Robust Comment Remover
+# Handles // line comments and /* block comments */
+# intelligently ignoring // inside strings (like URLs).
 def remove_comments(json_str):
-    pattern = r'(//.*?$|/\*.*?\*/)'
-    return re.sub(pattern, '', json_str, flags=re.MULTILINE|re.DOTALL)
+    pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
+    def replace(match):
+        # If it matches group 1 (a string), return it preserved
+        if match.group(1): return match.group(1)
+        # Otherwise it's a comment, return empty
+        return ""
+    return re.sub(pattern, replace, json_str)
 
 def clean_flow_logic(flow_data):
     clean = flow_data.copy()
@@ -345,10 +352,7 @@ with t_code:
         }]
         editor_options = {"showGutter": True, "showLineNumbers": True, "wrap": True, "fontSize": 14, "fontFamily": "monospace"}
         
-        resp = code_editor(
-            st.session_state.get("editor_content", ""), 
-            lang="json", height=500, options=editor_options, buttons=btn_settings, key=dynamic_key
-        )
+        resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, options=editor_options, buttons=btn_settings, key=dynamic_key)
         
         if resp and resp.get("text"): st.session_state["editor_content"] = resp["text"]
 
@@ -356,8 +360,7 @@ with t_code:
             try:
                 latest_text = resp.get("text", "")
                 
-                # [NEW] Pre-clean comments before parsing
-                # This allows pasting code with // comments without crashing
+                # [FIXED] Use the Robust Comment Remover
                 clean_text = remove_comments(latest_text)
                 
                 js = json.loads(clean_text)
@@ -466,7 +469,7 @@ with t_vis:
                         curr_next = choice.get("Next", "")
                         n_idx = opts.index(curr_next) if curr_next in opts else 0
                         choice["Next"] = st.selectbox("Go To", opts, index=n_idx, key=f"c_next_{i}{key_suffix}")
-                        if st.button("🗑️", key=f"del_rule_{i}{key_suffix}"): choices.pop(i); force_refresh()
+                        if st.button("🗑️", key=f"del_rule_{i}{key_suffix}"): choices.pop(i); safe_rerun()
                 if st.button("➕ Add Rule", key=f"btn_add_rule{key_suffix}"):
                     if opts: 
                         if "Choices" not in step_data: step_data["Choices"] = []
@@ -495,7 +498,6 @@ with t_vis:
 
     with c2:
         st.markdown("### Visual Flow")
-        # [UPDATED] Pass selected_step to the renderer
         render_flow_graph(curr, selected_step=selected_step if selected_step != "(Select a Step)" else None)
 
 # --- TAB 5: DEPLOY ---
