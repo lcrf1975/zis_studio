@@ -21,30 +21,14 @@ try:
 except ImportError:
     HAS_EDITOR = False
 
+# Use modern rerun command for reliability
 def force_refresh():
     if hasattr(st, "rerun"):
         st.rerun()
     else:
         st.experimental_rerun()
 
-# [HELPER] Robust Comment Remover for Internal Parsing
-# This allows the app to "understand" your code even if it has comments,
-# without deleting them from the editor view.
-def remove_comments(json_str):
-    # Matches strings (to preserve URLs like "http://") OR comments
-    pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
-    def replace(match):
-        # If it's a string (Group 1), keep it
-        if match.group(1): return match.group(1)
-        # If it's a comment (Group 2 or 3), remove it
-        return ""
-    try:
-        return re.sub(pattern, replace, json_str)
-    except:
-        return json_str
-
 def clean_flow_logic(flow_data):
-    if not isinstance(flow_data, dict): return flow_data
     clean = flow_data.copy()
     forbidden_keys = ["zis_template_version", "resources", "name", "description", "type", "properties"]
     for key in forbidden_keys:
@@ -58,17 +42,30 @@ st.set_page_config(
     page_title="ZIS Studio Beta", 
     layout="wide", 
     page_icon="⚡",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed" 
 )
 
 # [CSS OVERRIDES]
 st.markdown("""
 <style>
     /* 1. HIDE SIDEBAR COMPLETELY */
-    [data-testid="stSidebar"] { display: none; }
-    [data-testid="collapsedControl"] { display: none; }
+    [data-testid="stSidebar"] {
+        display: none;
+    }
+    
+    /* 2. HIDE SIDEBAR TOGGLE BUTTON */
+    [data-testid="collapsedControl"] {
+        display: none;
+    }
+
+    /* 3. Hide standard header for a cleaner look */
     header {visibility: hidden;}
-    .block-container { padding-top: 1rem; padding-bottom: 2rem; }
+    
+    /* 4. Adjust top padding to fill the space nicely */
+    .block-container {
+        padding-top: 1rem;
+        padding-bottom: 2rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -189,11 +186,13 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
+# [FEATURE KEPT] Added selected_step parameter for highlighting
 def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
         dot = graphviz.Digraph(comment='ZIS Flow')
         dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
+        
         dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12')
         dot.attr('edge', color='#888888') 
         
@@ -207,12 +206,14 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
             fill = "#e0e0e0" 
             pen = "1"
             if k in visited:
-                fill = "#C8E6C9"
+                fill = "#C8E6C9" # Light Green
                 pen = "2"
-                if highlight_path and k == highlight_path[-1]: fill = "#81C784"
+                if highlight_path and k == highlight_path[-1]: 
+                    fill = "#81C784" # Darker Green
             
+            # [FEATURE KEPT] Highlight selected step
             if selected_step and k == selected_step:
-                fill = "#FFF59D" # Highlight selected step
+                fill = "#FFF59D" # Yellow
                 pen = "3"
 
             dot.node(k, f"{k}\n({v.get('Type')})", fillcolor=fill, penwidth=pen)
@@ -223,6 +224,7 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
             if v.get("End"): 
                 dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
                 dot.edge(k, "END")
+        
         st.graphviz_chart(dot) 
     except: pass
 
@@ -232,16 +234,22 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
 st.title("ZIS Studio")
 
 t_set, t_imp, t_code, t_vis, t_dep, t_deb = st.tabs([
-    "⚙️ Settings", "📥 Import", "📝 Code Editor", "🎨 Visual Designer", "🚀 Deploy", "🐞 Debugger"
+    "⚙️ Settings",
+    "📥 Import", 
+    "📝 Code Editor", 
+    "🎨 Visual Designer", 
+    "🚀 Deploy", 
+    "🐞 Debugger"
 ])
 
 # --- TAB 1: SETTINGS ---
 with t_set:
     st.markdown("### 🔑 Zendesk Credentials")
+    st.caption("Enter your details to connect to your Zendesk instance.")
     col_creds, col_info = st.columns([1, 1])
     with col_creds:
         with st.container(border=True):
-            st.text_input("Subdomain", key="zd_subdomain", help="Just the subdomain")
+            st.text_input("Subdomain", key="zd_subdomain", help="Just the subdomain, e.g., 'z3n-demo'")
             st.text_input("Email", key="zd_email")
             st.text_input("API Token", key="zd_token", type="password")
             st.write("") 
@@ -253,6 +261,12 @@ with t_set:
                 else: 
                     st.toast(msg, icon="❌")
     with col_info:
+        st.info("""
+        **How to get an API Token:**
+        1. Go to Admin Center > Apps and integrations > APIs > Zendesk API.
+        2. Enable Token Access.
+        3. Create a new token and paste it here.
+        """)
         if st.session_state.get("is_connected"):
             st.success(f"✅ Connected to: **{st.session_state.zd_subdomain}.zendesk.com**")
 
@@ -314,7 +328,7 @@ with t_imp:
                             if not found: st.warning("No Flow resource found.")
                         else: st.error("Fetch failed. Please check permissions.")
 
-# --- TAB 3: CODE (FIXED: IGNORES COMMENTS WITHOUT DELETING) ---
+# --- TAB 3: CODE ---
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
@@ -326,25 +340,21 @@ with t_code:
         
         resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, options=editor_options, buttons=btn_settings, key=dynamic_key)
         
-        # Sync text state, but don't parse yet
         if resp and resp.get("text"): st.session_state["editor_content"] = resp["text"]
 
         if resp and resp.get("type") == "submit":
             try:
                 latest_text = resp.get("text", "")
-                
-                # 1. Clean for internal parsing (Strip comments)
-                clean_text = remove_comments(latest_text)
-                
-                # 2. Parse & Update VISUAL State only
-                js = json.loads(clean_text)
+                js = json.loads(latest_text)
                 clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
+                formatted_json = json.dumps(clean_js, indent=2)
+                
+                if formatted_json != st.session_state.get("editor_content"):
+                    st.session_state["editor_content"] = formatted_json
+                    st.session_state["editor_key"] += 1
+                
                 st.session_state["flow_json"] = clean_js
-                
-                # 3. DO NOT update 'editor_content' with clean_js.
-                # This keeps the user's comments intact in the editor.
-                
-                st.toast("Code Saved! (Comments ignored)", icon="✅")
+                st.toast("Code Validated, Formatted & Saved!", icon="✅")
                 force_refresh()
             except json.JSONDecodeError as e: st.error(f"❌ Save Failed: Invalid JSON.\n\nError: {e}")
             except Exception as e: st.error(f"❌ Error: {e}")
@@ -352,13 +362,12 @@ with t_code:
         txt = st.text_area("JSON", st.session_state.get("editor_content", ""), height=500, key=dynamic_key)
         if st.button("Save", key="save_text"):
             try:
-                clean_text = remove_comments(txt)
-                js = json.loads(clean_text)
+                js = json.loads(txt)
                 clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
+                formatted = json.dumps(clean_js, indent=2)
                 st.session_state["flow_json"] = clean_js
-                # Keep original text in editor
-                st.session_state["editor_content"] = txt
-                st.toast("Saved!", icon="💾")
+                st.session_state["editor_content"] = formatted
+                st.toast("Saved & Formatted", icon="💾")
                 force_refresh()
             except: st.error("Invalid JSON")
 
@@ -390,7 +399,6 @@ with t_vis:
                     elif new_step_type == "Action": new_def["ActionName"] = "zis:common:action:fetch"; new_def["Parameters"] = {}
                     else: new_def["End"] = True
                     st.session_state["flow_json"]["States"][new_step_name] = new_def
-                    # We update editor content here because this is a GUI change
                     st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
                     st.success(f"Created {new_step_name}")
                     force_refresh()
@@ -471,6 +479,7 @@ with t_vis:
 
     with c2:
         st.markdown("### Visual Flow")
+        # [FEATURE KEPT] Highlight selected step
         render_flow_graph(curr, selected_step=selected_step if selected_step != "(Select a Step)" else None)
 
 # --- TAB 5: DEPLOY ---
