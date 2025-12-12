@@ -21,7 +21,6 @@ try:
 except ImportError:
     HAS_EDITOR = False
 
-# Use modern rerun command for reliability
 def force_refresh():
     if hasattr(st, "rerun"):
         st.rerun()
@@ -29,18 +28,29 @@ def force_refresh():
         st.experimental_rerun()
 
 # [FIX] Robust Comment Remover
-# Handles // line comments and /* block comments */
-# intelligently ignoring // inside strings (like URLs).
+# This version carefully ignores // inside quotes (like URLs)
 def remove_comments(json_str):
+    # Pattern explanation:
+    # 1. Match strings: "..." (ignoring escaped quotes)
+    # 2. Match block comments: /* ... */
+    # 3. Match line comments: // ... (up to end of line)
     pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
+    
     def replace(match):
-        # If it matches group 1 (a string), return it preserved
-        if match.group(1): return match.group(1)
-        # Otherwise it's a comment, return empty
+        # Group 1 is the string. If matched, KEEP it.
+        if match.group(1): 
+            return match.group(1)
+        # Group 2 or 3 are comments. Return empty string (delete them).
         return ""
-    return re.sub(pattern, replace, json_str)
+    
+    try:
+        return re.sub(pattern, replace, json_str)
+    except:
+        # Fallback: if regex fails, return original string so we don't lose data
+        return json_str
 
 def clean_flow_logic(flow_data):
+    if not isinstance(flow_data, dict): return flow_data
     clean = flow_data.copy()
     forbidden_keys = ["zis_template_version", "resources", "name", "description", "type", "properties"]
     for key in forbidden_keys:
@@ -70,7 +80,7 @@ st.markdown("""
         display: none;
     }
 
-    /* 3. Hide standard header for a cleaner look */
+    /* 3. Hide standard header */
     header {visibility: hidden;}
     
     /* 4. Adjust top padding */
@@ -198,13 +208,11 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [UPDATED] Added 'selected_step' parameter for highlighting
 def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
         dot = graphviz.Digraph(comment='ZIS Flow')
         dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
-        
         dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12')
         dot.attr('edge', color='#888888') 
         
@@ -217,18 +225,15 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
         for k, v in flow_def.get("States", {}).items():
             fill = "#e0e0e0" 
             pen = "1"
-            
-            # Logic: Debug Path > Selected Step > Default
             if k in visited:
                 fill = "#C8E6C9" # Light Green
                 pen = "2"
                 if highlight_path and k == highlight_path[-1]: 
                     fill = "#81C784" # Darker Green
             
-            # [NEW] Highlight Selected Step in Designer
             if selected_step and k == selected_step:
                 fill = "#FFF59D" # Yellow Highlight
-                pen = "3" # Thicker border
+                pen = "3"
 
             dot.node(k, f"{k}\n({v.get('Type')})", fillcolor=fill, penwidth=pen)
             
@@ -248,12 +253,7 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
 st.title("ZIS Studio")
 
 t_set, t_imp, t_code, t_vis, t_dep, t_deb = st.tabs([
-    "⚙️ Settings",
-    "📥 Import", 
-    "📝 Code Editor", 
-    "🎨 Visual Designer", 
-    "🚀 Deploy", 
-    "🐞 Debugger"
+    "⚙️ Settings", "📥 Import", "📝 Code Editor", "🎨 Visual Designer", "🚀 Deploy", "🐞 Debugger"
 ])
 
 # --- TAB 1: SETTINGS ---
@@ -354,26 +354,43 @@ with t_code:
         
         resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, options=editor_options, buttons=btn_settings, key=dynamic_key)
         
-        if resp and resp.get("text"): st.session_state["editor_content"] = resp["text"]
+        # [FIX] Safer text synchronization
+        # Only update session state if the text is not empty and different
+        if resp and "text" in resp and resp["text"].strip() != "":
+            if resp["text"] != st.session_state.get("editor_content"):
+                st.session_state["editor_content"] = resp["text"]
 
         if resp and resp.get("type") == "submit":
             try:
+                # Use current text in buffer
                 latest_text = resp.get("text", "")
                 
-                # [FIXED] Use the Robust Comment Remover
+                # [FIX] If empty, try to use what's in session state to avoid wiping
+                if not latest_text.strip():
+                    latest_text = st.session_state.get("editor_content", "")
+
+                # Remove comments
                 clean_text = remove_comments(latest_text)
                 
+                # Parse
                 js = json.loads(clean_text)
                 clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
+                
+                # Format
                 formatted_json = json.dumps(clean_js, indent=2)
                 
-                if formatted_json != st.session_state.get("editor_content"):
-                    st.session_state["editor_content"] = formatted_json
-                    st.session_state["editor_key"] += 1
-                
-                st.session_state["flow_json"] = clean_js
-                st.toast("Code Validated, Formatted & Saved!", icon="✅")
-                force_refresh()
+                # [FIX] Safety check: If formatting results in empty string (weird error), don't save
+                if not formatted_json or formatted_json == "{}":
+                    st.warning("Resulting JSON was empty. Save cancelled to protect data.")
+                else:
+                    if formatted_json != st.session_state.get("editor_content"):
+                        st.session_state["editor_content"] = formatted_json
+                        st.session_state["editor_key"] += 1
+                    
+                    st.session_state["flow_json"] = clean_js
+                    st.toast("Code Validated, Formatted & Saved!", icon="✅")
+                    force_refresh()
+
             except json.JSONDecodeError as e: st.error(f"❌ Save Failed: Invalid JSON.\n\nError: {e}")
             except Exception as e: st.error(f"❌ Error: {e}")
     else:
