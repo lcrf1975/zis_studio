@@ -27,26 +27,20 @@ def force_refresh():
     else:
         st.experimental_rerun()
 
-# [FIX] Robust Comment Remover
-# This version carefully ignores // inside quotes (like URLs)
+# [HELPER] Robust Comment Remover for Internal Parsing
+# This allows the app to "understand" your code even if it has comments,
+# without deleting them from the editor view.
 def remove_comments(json_str):
-    # Pattern explanation:
-    # 1. Match strings: "..." (ignoring escaped quotes)
-    # 2. Match block comments: /* ... */
-    # 3. Match line comments: // ... (up to end of line)
+    # Matches strings (to preserve URLs like "http://") OR comments
     pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
-    
     def replace(match):
-        # Group 1 is the string. If matched, KEEP it.
-        if match.group(1): 
-            return match.group(1)
-        # Group 2 or 3 are comments. Return empty string (delete them).
+        # If it's a string (Group 1), keep it
+        if match.group(1): return match.group(1)
+        # If it's a comment (Group 2 or 3), remove it
         return ""
-    
     try:
         return re.sub(pattern, replace, json_str)
     except:
-        # Fallback: if regex fails, return original string so we don't lose data
         return json_str
 
 def clean_flow_logic(flow_data):
@@ -71,23 +65,10 @@ st.set_page_config(
 st.markdown("""
 <style>
     /* 1. HIDE SIDEBAR COMPLETELY */
-    [data-testid="stSidebar"] {
-        display: none;
-    }
-    
-    /* 2. HIDE SIDEBAR TOGGLE BUTTON */
-    [data-testid="collapsedControl"] {
-        display: none;
-    }
-
-    /* 3. Hide standard header */
+    [data-testid="stSidebar"] { display: none; }
+    [data-testid="collapsedControl"] { display: none; }
     header {visibility: hidden;}
-    
-    /* 4. Adjust top padding */
-    .block-container {
-        padding-top: 1rem;
-        padding-bottom: 2rem;
-    }
+    .block-container { padding-top: 1rem; padding-bottom: 2rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -226,13 +207,12 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
             fill = "#e0e0e0" 
             pen = "1"
             if k in visited:
-                fill = "#C8E6C9" # Light Green
+                fill = "#C8E6C9"
                 pen = "2"
-                if highlight_path and k == highlight_path[-1]: 
-                    fill = "#81C784" # Darker Green
+                if highlight_path and k == highlight_path[-1]: fill = "#81C784"
             
             if selected_step and k == selected_step:
-                fill = "#FFF59D" # Yellow Highlight
+                fill = "#FFF59D" # Highlight selected step
                 pen = "3"
 
             dot.node(k, f"{k}\n({v.get('Type')})", fillcolor=fill, penwidth=pen)
@@ -243,7 +223,6 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
             if v.get("End"): 
                 dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
                 dot.edge(k, "END")
-        
         st.graphviz_chart(dot) 
     except: pass
 
@@ -259,11 +238,10 @@ t_set, t_imp, t_code, t_vis, t_dep, t_deb = st.tabs([
 # --- TAB 1: SETTINGS ---
 with t_set:
     st.markdown("### 🔑 Zendesk Credentials")
-    st.caption("Enter your details to connect to your Zendesk instance.")
     col_creds, col_info = st.columns([1, 1])
     with col_creds:
         with st.container(border=True):
-            st.text_input("Subdomain", key="zd_subdomain", help="Just the subdomain, e.g., 'z3n-demo'")
+            st.text_input("Subdomain", key="zd_subdomain", help="Just the subdomain")
             st.text_input("Email", key="zd_email")
             st.text_input("API Token", key="zd_token", type="password")
             st.write("") 
@@ -275,12 +253,6 @@ with t_set:
                 else: 
                     st.toast(msg, icon="❌")
     with col_info:
-        st.info("""
-        **How to get an API Token:**
-        1. Go to Admin Center > Apps and integrations > APIs > Zendesk API.
-        2. Enable Token Access.
-        3. Create a new token and paste it here.
-        """)
         if st.session_state.get("is_connected"):
             st.success(f"✅ Connected to: **{st.session_state.zd_subdomain}.zendesk.com**")
 
@@ -342,7 +314,7 @@ with t_imp:
                             if not found: st.warning("No Flow resource found.")
                         else: st.error("Fetch failed. Please check permissions.")
 
-# --- TAB 3: CODE ---
+# --- TAB 3: CODE (FIXED: IGNORES COMMENTS WITHOUT DELETING) ---
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
@@ -354,43 +326,26 @@ with t_code:
         
         resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, options=editor_options, buttons=btn_settings, key=dynamic_key)
         
-        # [FIX] Safer text synchronization
-        # Only update session state if the text is not empty and different
-        if resp and "text" in resp and resp["text"].strip() != "":
-            if resp["text"] != st.session_state.get("editor_content"):
-                st.session_state["editor_content"] = resp["text"]
+        # Sync text state, but don't parse yet
+        if resp and resp.get("text"): st.session_state["editor_content"] = resp["text"]
 
         if resp and resp.get("type") == "submit":
             try:
-                # Use current text in buffer
                 latest_text = resp.get("text", "")
                 
-                # [FIX] If empty, try to use what's in session state to avoid wiping
-                if not latest_text.strip():
-                    latest_text = st.session_state.get("editor_content", "")
-
-                # Remove comments
+                # 1. Clean for internal parsing (Strip comments)
                 clean_text = remove_comments(latest_text)
                 
-                # Parse
+                # 2. Parse & Update VISUAL State only
                 js = json.loads(clean_text)
                 clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
+                st.session_state["flow_json"] = clean_js
                 
-                # Format
-                formatted_json = json.dumps(clean_js, indent=2)
+                # 3. DO NOT update 'editor_content' with clean_js.
+                # This keeps the user's comments intact in the editor.
                 
-                # [FIX] Safety check: If formatting results in empty string (weird error), don't save
-                if not formatted_json or formatted_json == "{}":
-                    st.warning("Resulting JSON was empty. Save cancelled to protect data.")
-                else:
-                    if formatted_json != st.session_state.get("editor_content"):
-                        st.session_state["editor_content"] = formatted_json
-                        st.session_state["editor_key"] += 1
-                    
-                    st.session_state["flow_json"] = clean_js
-                    st.toast("Code Validated, Formatted & Saved!", icon="✅")
-                    force_refresh()
-
+                st.toast("Code Saved! (Comments ignored)", icon="✅")
+                force_refresh()
             except json.JSONDecodeError as e: st.error(f"❌ Save Failed: Invalid JSON.\n\nError: {e}")
             except Exception as e: st.error(f"❌ Error: {e}")
     else:
@@ -400,10 +355,10 @@ with t_code:
                 clean_text = remove_comments(txt)
                 js = json.loads(clean_text)
                 clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
-                formatted = json.dumps(clean_js, indent=2)
                 st.session_state["flow_json"] = clean_js
-                st.session_state["editor_content"] = formatted
-                st.toast("Saved & Formatted", icon="💾")
+                # Keep original text in editor
+                st.session_state["editor_content"] = txt
+                st.toast("Saved!", icon="💾")
                 force_refresh()
             except: st.error("Invalid JSON")
 
@@ -435,6 +390,7 @@ with t_vis:
                     elif new_step_type == "Action": new_def["ActionName"] = "zis:common:action:fetch"; new_def["Parameters"] = {}
                     else: new_def["End"] = True
                     st.session_state["flow_json"]["States"][new_step_name] = new_def
+                    # We update editor content here because this is a GUI change
                     st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
                     st.success(f"Created {new_step_name}")
                     force_refresh()
@@ -486,7 +442,7 @@ with t_vis:
                         curr_next = choice.get("Next", "")
                         n_idx = opts.index(curr_next) if curr_next in opts else 0
                         choice["Next"] = st.selectbox("Go To", opts, index=n_idx, key=f"c_next_{i}{key_suffix}")
-                        if st.button("🗑️", key=f"del_rule_{i}{key_suffix}"): choices.pop(i); safe_rerun()
+                        if st.button("🗑️", key=f"del_rule_{i}{key_suffix}"): choices.pop(i); force_refresh()
                 if st.button("➕ Add Rule", key=f"btn_add_rule{key_suffix}"):
                     if opts: 
                         if "Choices" not in step_data: step_data["Choices"] = []
