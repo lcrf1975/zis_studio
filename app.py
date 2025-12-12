@@ -28,6 +28,11 @@ def force_refresh():
     else:
         st.experimental_rerun()
 
+# [NEW HELPER] Strip C-style comments (// or /* */) from JSON string
+def remove_comments(json_str):
+    pattern = r'(//.*?$|/\*.*?\*/)'
+    return re.sub(pattern, '', json_str, flags=re.MULTILINE|re.DOTALL)
+
 def clean_flow_logic(flow_data):
     clean = flow_data.copy()
     forbidden_keys = ["zis_template_version", "resources", "name", "description", "type", "properties"]
@@ -42,20 +47,18 @@ st.set_page_config(
     page_title="ZIS Studio Beta", 
     layout="wide", 
     page_icon="⚡",
-    initial_sidebar_state="collapsed" 
+    initial_sidebar_state="expanded"
 )
 
 # [CSS OVERRIDES]
 st.markdown("""
 <style>
     /* 1. HIDE SIDEBAR COMPLETELY */
-    /* This fixes the "White Space" on the left by removing the sidebar container */
     [data-testid="stSidebar"] {
         display: none;
     }
     
     /* 2. HIDE SIDEBAR TOGGLE BUTTON */
-    /* Removes the little arrow > at the top left so you can't accidentally open a blank side */
     [data-testid="collapsedControl"] {
         display: none;
     }
@@ -63,7 +66,7 @@ st.markdown("""
     /* 3. Hide standard header for a cleaner look */
     header {visibility: hidden;}
     
-    /* 4. Adjust top padding to fill the space nicely */
+    /* 4. Adjust top padding */
     .block-container {
         padding-top: 1rem;
         padding-bottom: 2rem;
@@ -188,7 +191,8 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-def render_flow_graph(flow_def, highlight_path=None):
+# [UPDATED] Added 'selected_step' parameter for highlighting
+def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
         dot = graphviz.Digraph(comment='ZIS Flow')
@@ -206,12 +210,19 @@ def render_flow_graph(flow_def, highlight_path=None):
         for k, v in flow_def.get("States", {}).items():
             fill = "#e0e0e0" 
             pen = "1"
+            
+            # Logic: Debug Path > Selected Step > Default
             if k in visited:
                 fill = "#C8E6C9" # Light Green
                 pen = "2"
                 if highlight_path and k == highlight_path[-1]: 
                     fill = "#81C784" # Darker Green
             
+            # [NEW] Highlight Selected Step in Designer
+            if selected_step and k == selected_step:
+                fill = "#FFF59D" # Yellow Highlight
+                pen = "3" # Thicker border
+
             dot.node(k, f"{k}\n({v.get('Type')})", fillcolor=fill, penwidth=pen)
             
             if "Next" in v: dot.edge(k, v["Next"])
@@ -334,14 +345,22 @@ with t_code:
         }]
         editor_options = {"showGutter": True, "showLineNumbers": True, "wrap": True, "fontSize": 14, "fontFamily": "monospace"}
         
-        resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, options=editor_options, buttons=btn_settings, key=dynamic_key)
+        resp = code_editor(
+            st.session_state.get("editor_content", ""), 
+            lang="json", height=500, options=editor_options, buttons=btn_settings, key=dynamic_key
+        )
         
         if resp and resp.get("text"): st.session_state["editor_content"] = resp["text"]
 
         if resp and resp.get("type") == "submit":
             try:
                 latest_text = resp.get("text", "")
-                js = json.loads(latest_text)
+                
+                # [NEW] Pre-clean comments before parsing
+                # This allows pasting code with // comments without crashing
+                clean_text = remove_comments(latest_text)
+                
+                js = json.loads(clean_text)
                 clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
                 formatted_json = json.dumps(clean_js, indent=2)
                 
@@ -358,7 +377,8 @@ with t_code:
         txt = st.text_area("JSON", st.session_state.get("editor_content", ""), height=500, key=dynamic_key)
         if st.button("Save", key="save_text"):
             try:
-                js = json.loads(txt)
+                clean_text = remove_comments(txt)
+                js = json.loads(clean_text)
                 clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
                 formatted = json.dumps(clean_js, indent=2)
                 st.session_state["flow_json"] = clean_js
@@ -475,7 +495,8 @@ with t_vis:
 
     with c2:
         st.markdown("### Visual Flow")
-        render_flow_graph(curr)
+        # [UPDATED] Pass selected_step to the renderer
+        render_flow_graph(curr, selected_step=selected_step if selected_step != "(Select a Step)" else None)
 
 # --- TAB 5: DEPLOY ---
 with t_dep:
