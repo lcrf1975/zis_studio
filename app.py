@@ -27,6 +27,7 @@ def force_refresh():
     else:
         st.experimental_rerun()
 
+# [HELPER] Robust Comment Remover for Parsing
 def remove_comments(json_str):
     pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
     def replace(match):
@@ -138,7 +139,6 @@ class ZISFlowEngine:
         flow_def = self.flow.get("definition", self.flow)
         curr = flow_def.get("StartAt") or flow_def.get("startAt")
         states = flow_def.get("States") or flow_def.get("states", {})
-        
         self.log("START", f"Flow: {self.context.get('flow_name', 'Local')}")
         steps = 0
         while curr and steps < 50:
@@ -148,13 +148,11 @@ class ZISFlowEngine:
             if not state: break
             
             sType = state.get("Type") or state.get("type")
-            
             if sType == "Action":
                 res = self.run_action(curr, state)
                 res_path = state.get("ResultPath") or state.get("resultPath")
                 if res_path: self.context[res_path.split(".")[-1]] = res
                 curr = state.get("Next") or state.get("next")
-            
             elif sType == "Choice":
                 curr = state.get("Default") or state.get("default")
                 choices = state.get("Choices") or state.get("choices", [])
@@ -164,20 +162,17 @@ class ZISFlowEngine:
                     match_val = rule.get("StringEquals") or rule.get("stringEquals") or rule.get("Contains") or rule.get("contains")
                     if str(match_val) in str(val): 
                         curr = rule.get("Next") or rule.get("next"); break
-            
             elif sType == "Pass":
                 res_path = state.get("ResultPath") or state.get("resultPath") or "$.result"
                 res_val = state.get("Result") or state.get("result")
                 if res_val: self.context[res_path.split(".")[-1]] = res_val
                 curr = state.get("Next") or state.get("next")
-            
             elif sType == "Wait":
-                time.sleep(float(state.get("Seconds") or state.get("seconds", 1)))
+                sec = state.get("Seconds") or state.get("seconds", 1)
+                time.sleep(float(sec))
                 curr = state.get("Next") or state.get("next")
-            
             elif sType in ["Succeed", "Fail"]: break
             if state.get("End") or state.get("end"): break
-            
         return self.logs, self.context, self.visited_states
 
 # ==========================================
@@ -204,14 +199,12 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
         dot.attr('edge', color='#888888') 
         
         visited = set(highlight_path) if highlight_path else set()
-        
         start = flow_def.get("StartAt") or flow_def.get("startAt")
         
         dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled")
         if start: dot.edge("START", start)
 
         states = flow_def.get("States") or flow_def.get("states", {})
-
         for k, v in states.items():
             fill = "#e0e0e0" 
             pen = "1"
@@ -352,11 +345,11 @@ with t_code:
             try:
                 latest_text = resp.get("text", "")
                 
-                # 1. Internal clean for parsing (comments)
+                # 1. Clean comments
                 clean_text = remove_comments(latest_text)
                 js = json.loads(clean_text)
                 
-                # 2. Bundle detection
+                # 2. Smart Bundle Detect
                 if "resources" in js:
                     for res_k, res_v in js["resources"].items():
                         if res_v.get("type") == "ZIS::Flow":
@@ -364,22 +357,18 @@ with t_code:
                             st.toast(f"📦 Extracted Flow: {res_k}", icon="✂️")
                             break
 
-                # 3. Clean structure
                 clean_js = clean_flow_logic(js.get("definition", js))
+                formatted_json = json.dumps(clean_js, indent=2, sort_keys=False)
                 
-                # 4. State Update Logic (Smart Refresh)
-                logic_changed = clean_js != st.session_state.get("flow_json")
+                if formatted_json != st.session_state.get("editor_content"):
+                    st.session_state["editor_content"] = formatted_json
+                    st.session_state["editor_key"] += 1
                 
-                # Update flow logic (source of truth)
                 st.session_state["flow_json"] = clean_js
-                
-                # We do NOT update 'editor_content' here to avoid re-formatting/blinking loop
-                # unless you want to force Prettify on every save (which causes the blinking).
-                # Current behavior: Keeps user text as-is, updates backend logic.
-                
                 st.toast("Code Validated & Saved!", icon="✅")
                 
-                if logic_changed:
+                # IMPORTANT: Only refresh if logic actually changed (stops blinking)
+                if clean_js != st.session_state.get("flow_json"):
                     force_refresh()
                     
             except json.JSONDecodeError as e: st.error(f"❌ Save Failed: Invalid JSON.\n\nError: {e}")
@@ -407,6 +396,7 @@ with t_code:
 with t_vis:
     c1, c2 = st.columns([1, 2])
     curr = st.session_state["flow_json"]
+    # [FIX] Case-insensitive lookup for States
     states = curr.get("States") or curr.get("states", {})
     keys = list(states.keys())
     
@@ -431,10 +421,13 @@ with t_vis:
                     elif new_step_type == "Action": new_def["ActionName"] = "zis:common:action:fetch"; new_def["Parameters"] = {}
                     else: new_def["End"] = True
                     
-                    target_key = "States" if "States" in st.session_state["flow_json"] else "states"
-                    if target_key not in st.session_state["flow_json"]: st.session_state["flow_json"][target_key] = {}
-                    st.session_state["flow_json"][target_key][new_step_name] = new_def
+                    # [FIX] Determine correct target key (States vs states)
+                    target_key = "States" if "States" in curr else "states"
+                    if target_key not in curr: # If neither exist yet
+                        target_key = "States"
+                        curr[target_key] = {}
                     
+                    st.session_state["flow_json"][target_key][new_step_name] = new_def
                     st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
                     st.success(f"Created {new_step_name}")
                     force_refresh()
@@ -453,45 +446,80 @@ with t_vis:
                 if is_end: step_data["End"] = True; step_data.pop("Next", None)
                 else:
                     step_data.pop("End", None)
-                    current_next = step_data.get("Next", "")
+                    # [FIX] Read current next carefully (case-insensitive) to prevent dropdown reset
+                    current_next = step_data.get("Next") or step_data.get("next", "")
                     next_options = [opt for opt in keys if opt != selected_step]
                     if next_options:
                         idx = next_options.index(current_next) if current_next in next_options else 0
-                        step_data["Next"] = st.selectbox("Go to Next", next_options, index=idx, key=f"sel_next_step{key_suffix}_{len(next_options)}")
+                        
+                        # Write standardized "Next" key
+                        new_next = st.selectbox("Go to Next", next_options, index=idx, key=f"sel_next_step{key_suffix}_{len(next_options)}")
+                        step_data["Next"] = new_next
+                        # Clean up old lowercase key if present to avoid confusion
+                        if "next" in step_data and step_data["next"] != new_next:
+                            del step_data["next"]
+                            
                     else: st.warning("Create another step to link to.")
 
             if step_type == "Action":
-                step_data["ActionName"] = st.text_input("Action Name", value=step_data.get("ActionName", ""), key=f"inp_act_name{key_suffix}")
-                current_params = json.dumps(step_data.get("Parameters", {}), indent=2)
+                current_action = step_data.get("ActionName") or step_data.get("actionName", "")
+                step_data["ActionName"] = st.text_input("Action Name", value=current_action, key=f"inp_act_name{key_suffix}")
+                if "actionName" in step_data: del step_data["actionName"] # cleanup
+                
+                raw_params = step_data.get("Parameters") or step_data.get("parameters", {})
+                current_params = json.dumps(raw_params, indent=2)
                 new_params = st.text_area("Parameters JSON", value=current_params, height=150, key=f"inp_act_params{key_suffix}")
-                try: step_data["Parameters"] = json.loads(new_params)
+                try: 
+                    step_data["Parameters"] = json.loads(new_params)
+                    if "parameters" in step_data: del step_data["parameters"]
                 except: st.error("Invalid JSON")
+            
             elif step_type == "Wait":
-                step_data["Seconds"] = st.number_input("Wait (Sec)", min_value=1, value=int(step_data.get("Seconds", 5)), key=f"inp_wait_sec{key_suffix}")
+                current_sec = step_data.get("Seconds") or step_data.get("seconds", 5)
+                step_data["Seconds"] = st.number_input("Wait (Sec)", min_value=1, value=int(current_sec), key=f"inp_wait_sec{key_suffix}")
+            
             elif step_type == "Choice":
-                current_def = step_data.get("Default", "")
+                current_def = step_data.get("Default") or step_data.get("default", "")
                 opts = [o for o in keys if o != selected_step]
                 def_idx = opts.index(current_def) if current_def in opts else 0
-                if opts: step_data["Default"] = st.selectbox("Else (Default Path)", opts, index=def_idx, key=f"sel_choice_def{key_suffix}_{len(opts)}")
-                choices = step_data.get("Choices", [])
+                if opts: 
+                    new_def = st.selectbox("Else (Default Path)", opts, index=def_idx, key=f"sel_choice_def{key_suffix}_{len(opts)}")
+                    step_data["Default"] = new_def
+                    if "default" in step_data: del step_data["default"]
+
+                choices = step_data.get("Choices") or step_data.get("choices", [])
+                for i, choice in enumerate(choices):
+                    with st.expander(f"Rule #{i+1}", expanded=False):
+                        # Simple rule editor - handles standard "variable" and "stringEquals"
+                        curr_var = choice.get("Variable") or choice.get("variable", "$.input...")
+                        choice["Variable"] = st.text_input("Variable", value=curr_var, key=f"c_var_{i}{key_suffix}")
+                        
+                        curr_val = choice.get("StringEquals") or choice.get("stringEquals") or ""
+                        choice["StringEquals"] = st.text_input("Equals (String)", value=str(curr_val), key=f"c_val_{i}{key_suffix}")
+                        
+                        curr_nxt = choice.get("Next") or choice.get("next", "")
+                        n_idx = opts.index(curr_nxt) if curr_nxt in opts else 0
+                        choice["Next"] = st.selectbox("Go To", opts, index=n_idx, key=f"c_next_{i}{key_suffix}")
+                        
+                        # Cleanup lowercase keys
+                        for k in ["variable", "stringEquals", "next"]:
+                            if k in choice: del choice[k]
+                            
                 if st.button("➕ Add Rule", key=f"btn_add_rule{key_suffix}"):
                     if opts: 
                         if "Choices" not in step_data: step_data["Choices"] = []
+                        # Ensure we write to "Choices" if it was "choices"
+                        if "choices" in step_data: 
+                            step_data["Choices"] = step_data.pop("choices")
+                        
                         step_data["Choices"].append({"Variable": "$.input", "StringEquals": "", "Next": opts[0]})
                         force_refresh()
-            elif step_type == "Pass":
-                new_res = st.text_area("Result JSON", value=json.dumps(step_data.get("Result", {}), indent=2), key=f"inp_pass_res{key_suffix}")
-                try: step_data["Result"] = json.loads(new_res)
-                except: st.error("Invalid JSON")
-            elif step_type == "Fail":
-                step_data["Error"] = st.text_input("Error Code", value=step_data.get("Error", "Error"), key=f"inp_fail_err{key_suffix}")
-                step_data["Cause"] = st.text_input("Cause", value=step_data.get("Cause", ""), key=f"inp_fail_cause{key_suffix}")
 
             st.write("---")
             col_del, col_save = st.columns(2)
             with col_del:
                 if st.button("🗑️ Delete Step", type="secondary", key=f"btn_del_step{key_suffix}"):
-                    target_key = "States" if "States" in st.session_state["flow_json"] else "states"
+                    target_key = "States" if "States" in curr else "states"
                     del st.session_state["flow_json"][target_key][selected_step]
                     st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
                     force_refresh()
