@@ -193,10 +193,152 @@ for key in ["zd_subdomain", "zd_email", "zd_token"]:
     if key not in st.session_state: st.session_state[key] = ""
 
 # ==========================================
-# 2. LOGIC ENGINE (Moved to zis_engine.py but kept simple ref here for debug tab import if needed)
+# 2. LOGIC ENGINE
 # ==========================================
-# (Importing from file in actual usage, but defining class here for standalone run)
-from zis_engine import ZISFlowEngine
+class ZISFlowEngine:
+    def __init__(self, flow_definition, input_data, connections, configs):
+        self.flow = flow_definition
+        # Initialize context with standard ZIS structure
+        self.context = {
+            "input": input_data,
+            "connections": connections,
+            "config": configs,
+            "flow_name": flow_definition.get("Comment", "Local Flow")
+        }
+        self.logs = []
+        self.visited_states = []
+
+    def log(self, step, message, status="INFO"):
+        entry = f"[{time.strftime('%H:%M:%S')}] {step}: {message} ({status})"
+        self.logs.append(entry)
+
+    def resolve_path(self, path, data):
+        """Resolves JSONPath like $.input.ticket.id"""
+        if not isinstance(path, str) or not path.startswith("$."):
+            return path
+        try:
+            # Handle root reference
+            if path == "$": return data
+            
+            jsonpath_expr = parse(path.replace("$.", ""))
+            matches = jsonpath_expr.find(data)
+            return matches[0].value if matches else None
+        except Exception as e:
+            return None
+
+    def set_nested_value(self, path, value):
+        if not path or not path.startswith("$."): return
+        keys = path.replace("$.", "").split(".")
+        current = self.context
+        for i, key in enumerate(keys[:-1]):
+            if key not in current or not isinstance(current[key], dict):
+                current[key] = {}
+            current = current[key]
+        current[keys[-1]] = value
+
+    def interpolate(self, text):
+        if not isinstance(text, str): return text
+        placeholders = re.findall(r'\{\{(.*?)\}\}', text)
+        for ph in placeholders:
+            val = self.resolve_path(ph, self.context)
+            text = text.replace(f"{{{{{ph}}}}}", str(val))
+        return text
+
+    def run_action(self, state_name, state_def):
+        action_name = state_def.get("ActionName", "Unknown Action")
+        params = state_def.get("Parameters", {})
+        
+        resolved_params = {}
+        for k, v in params.items():
+            key = k[:-2] if k.endswith(".$") else k
+            if k.endswith(".$"):
+                val = self.resolve_path(v, self.context)
+            else:
+                val = self.interpolate(v)
+            resolved_params[key] = val
+
+        self.log(state_name, f"Executing Action: {action_name}", "RUNNING")
+        
+        url = resolved_params.get("url", "")
+        method = resolved_params.get("method", "GET")
+        payload = resolved_params.get("body")
+        
+        if url:
+            try:
+                headers = resolved_params.get("headers", {})
+                response = requests.request(method, url, json=payload, headers=headers)
+                status_msg = f"API Hit: {url} [{response.status_code}]"
+                if response.status_code >= 400: self.log(state_name, status_msg, "ERROR")
+                else: self.log(state_name, status_msg, "SUCCESS")
+                return response.json() if response.content else {}
+            except Exception as e:
+                self.log(state_name, f"Request failed: {str(e)}", "ERROR")
+                return {"error": str(e)}
+        else:
+            self.log(state_name, "No URL found. Simulating success (Mock Mode)", "WARNING")
+            return {"mock_response": "Success", "input_params": resolved_params}
+
+    def run(self):
+        flow_def = self.flow.get("definition", self.flow)
+        current_state_name = flow_def.get("StartAt")
+        states = flow_def.get("States", {})
+        
+        self.log("START", f"Starting Flow: {self.context.get('flow_name', 'Local')}")
+        steps_run = 0
+        MAX_STEPS = 50 
+
+        while current_state_name and steps_run < MAX_STEPS:
+            steps_run += 1
+            self.visited_states.append(current_state_name)
+            state = states.get(current_state_name)
+            if not state: break
+
+            state_type = state.get("Type")
+            result = None
+            
+            if state_type == "Action":
+                result = self.run_action(current_state_name, state)
+                if "ResultPath" in state: self.set_nested_value(state["ResultPath"], result)
+                current_state_name = state.get("Next")
+
+            elif state_type == "Choice":
+                choices = state.get("Choices", [])
+                next_state = state.get("Default")
+                matched = False
+                for rule in choices:
+                    variable = self.resolve_path(rule.get("Variable"), self.context)
+                    try:
+                        if "StringEquals" in rule and str(variable) == str(rule["StringEquals"]): matched = True
+                        elif "BooleanEquals" in rule and bool(variable) == bool(rule["BooleanEquals"]): matched = True
+                        elif "NumericEquals" in rule and float(variable) == float(rule["NumericEquals"]): matched = True
+                        elif "NumericGreaterThan" in rule and float(variable) > float(rule["NumericGreaterThan"]): matched = True
+                        elif "NumericGreaterThanEquals" in rule and float(variable) >= float(rule["NumericGreaterThanEquals"]): matched = True
+                        elif "NumericLessThan" in rule and float(variable) < float(rule["NumericLessThan"]): matched = True
+                        elif "NumericLessThanEquals" in rule and float(variable) <= float(rule["NumericLessThanEquals"]): matched = True
+                    except: pass
+                    
+                    if matched:
+                        next_state = rule["Next"]
+                        self.log(current_state_name, f"Rule Matched: {rule.get('Variable')}", "INFO")
+                        break
+
+                if not matched: self.log(current_state_name, "No rules matched. Defaulting.", "INFO")
+                current_state_name = next_state
+
+            elif state_type == "Pass":
+                self.log(current_state_name, "Passing through")
+                if "Result" in state and "ResultPath" in state:
+                    self.set_nested_value(state["ResultPath"], state["Result"])
+                current_state_name = state.get("Next")
+
+            elif state_type == "Wait":
+                time.sleep(float(state.get("Seconds", 1)))
+                current_state_name = state.get("Next")
+            elif state_type == "Succeed": break
+            elif state_type == "Fail": break
+            if state.get("End"): break
+            
+        return self.logs, self.context, self.visited_states
 
 # ==========================================
 # 3. HELPERS & GRAPH
@@ -446,8 +588,16 @@ with t_vis:
                     if sel_def != "(Select a Step)" and sel_def != current_def:
                          step_data["Default"] = sel_def
                     
-                    choices = get_zis_key(step_data, "Choices", [])
-                    if "Choices" not in step_data and "choices" in step_data: step_data["Choices"] = step_data.pop("choices")
+                    # [FIX] Force retrieval of Choices list, ensuring it's a list
+                    raw_choices = get_zis_key(step_data, "Choices")
+                    if raw_choices is None: 
+                        # Try finding lowercase fallback manually if get_zis_key missed it
+                        raw_choices = step_data.get("choices")
+                    
+                    if not isinstance(raw_choices, list): raw_choices = []
+                    
+                    # Force update dict to ensure we are editing the real list
+                    step_data["Choices"] = raw_choices 
                     
                     # [UPDATE] Dynamic Operator Handling
                     possible_ops = [
@@ -456,7 +606,13 @@ with t_vis:
                         "NumericLessThan", "NumericLessThanEquals"
                     ]
                     
-                    for i, choice in enumerate(choices):
+                    if not raw_choices:
+                        st.info("No conditional rules defined.")
+
+                    for i, choice in enumerate(raw_choices):
+                        # Ensure choice is a dict
+                        if not isinstance(choice, dict): continue
+
                         with st.expander(f"Rule #{i+1}", expanded=False):
                             # 1. Detect Operator
                             current_op = "StringEquals" # Default
@@ -509,10 +665,11 @@ with t_vis:
                             if sel_choice_next != "(Select a Step)" and sel_choice_next != n_val:
                                 choice["Next"] = sel_choice_next
                             
-                            if st.button("🗑️", key=f"del_rule_{i}{key_suffix}"): choices.pop(i); force_refresh()
+                            if st.button("🗑️", key=f"del_rule_{i}{key_suffix}"): 
+                                raw_choices.pop(i)
+                                force_refresh()
 
                     if st.button("➕ Add Rule"):
-                        if "Choices" not in step_data: step_data["Choices"] = []
                         step_data["Choices"].append({"Variable": "$.input", "StringEquals": "", "Next": opts[0] if opts else ""})
                         force_refresh()
 
