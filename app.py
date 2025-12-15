@@ -21,21 +21,17 @@ try:
 except ImportError:
     HAS_EDITOR = False
 
-# Use modern rerun command for reliability
 def force_refresh():
     if hasattr(st, "rerun"):
         st.rerun()
     else:
         st.experimental_rerun()
 
-# [HELPER] Robust Comment Remover
-# Essential because standard JSON parsers crash on "//" comments.
-# This cleans the code for the logic engine only, preserving your view.
 def remove_comments(json_str):
     pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
     def replace(match):
-        if match.group(1): return match.group(1) # Keep strings
-        return "" # Remove comments
+        if match.group(1): return match.group(1) 
+        return ""
     try:
         return re.sub(pattern, replace, json_str)
     except:
@@ -44,7 +40,6 @@ def remove_comments(json_str):
 def clean_flow_logic(flow_data):
     if not isinstance(flow_data, dict): return flow_data
     clean = flow_data.copy()
-    # Strip bundle-specific keys only if we are extracting the flow logic
     forbidden_keys = ["zis_template_version", "resources", "name", "description", "type", "properties"]
     for key in forbidden_keys:
         if key in clean: del clean[key]
@@ -112,10 +107,8 @@ class ZISFlowEngine:
         return text
 
     def run_action(self, state_name, state_def):
-        # Case-insensitive ActionName lookup
         action_name = state_def.get("ActionName") or state_def.get("actionName", "Unknown")
         params = {}
-        # Case-insensitive Parameters lookup
         raw_params = state_def.get("Parameters") or state_def.get("parameters", {})
         
         for k, v in raw_params.items():
@@ -130,10 +123,9 @@ class ZISFlowEngine:
         if url:
             try:
                 resp = requests.request(method, url, json=params.get("body"))
-                if resp.status_code >= 400:
-                     self.log(state_name, f"API {resp.status_code}: {resp.text[:50]}...", "ERROR")
-                else:
-                     self.log(state_name, f"API {resp.status_code}", "SUCCESS")
+                code = resp.status_code
+                if code >= 400: self.log(state_name, f"API {code}: {resp.text[:50]}...", "ERROR")
+                else: self.log(state_name, f"API {code}", "SUCCESS")
                 return resp.json() if resp.content else {}
             except Exception as e:
                 self.log(state_name, f"Error: {e}", "ERROR")
@@ -144,10 +136,7 @@ class ZISFlowEngine:
 
     def run(self):
         flow_def = self.flow.get("definition", self.flow)
-        
-        # [FIX] Case-insensitive StartAt
         curr = flow_def.get("StartAt") or flow_def.get("startAt")
-        # [FIX] Case-insensitive States
         states = flow_def.get("States") or flow_def.get("states", {})
         
         self.log("START", f"Flow: {self.context.get('flow_name', 'Local')}")
@@ -158,7 +147,6 @@ class ZISFlowEngine:
             state = states.get(curr)
             if not state: break
             
-            # [FIX] Case-insensitive Type
             sType = state.get("Type") or state.get("type")
             
             if sType == "Action":
@@ -173,7 +161,6 @@ class ZISFlowEngine:
                 for rule in choices:
                     var_path = rule.get("Variable") or rule.get("variable")
                     val = self.resolve_path(var_path, self.context)
-                    # Simplified match logic
                     match_val = rule.get("StringEquals") or rule.get("stringEquals") or rule.get("Contains") or rule.get("contains")
                     if str(match_val) in str(val): 
                         curr = rule.get("Next") or rule.get("next"); break
@@ -208,7 +195,6 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [VISUALIZER] Updated for Case-Insensitive Graphing
 def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
@@ -219,13 +205,11 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
         
         visited = set(highlight_path) if highlight_path else set()
         
-        # [FIX] Case-insensitive Start
         start = flow_def.get("StartAt") or flow_def.get("startAt")
         
         dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled")
         if start: dot.edge("START", start)
 
-        # [FIX] Case-insensitive States
         states = flow_def.get("States") or flow_def.get("states", {})
 
         for k, v in states.items():
@@ -237,7 +221,7 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
                 if highlight_path and k == highlight_path[-1]: fill = "#81C784"
             
             if selected_step and k == selected_step:
-                fill = "#FFF59D" # Highlight
+                fill = "#FFF59D" 
                 pen = "3"
 
             sType = v.get("Type") or v.get("type", "Unknown")
@@ -368,11 +352,11 @@ with t_code:
             try:
                 latest_text = resp.get("text", "")
                 
-                # [FIX] Clean comments internally so parsing works
+                # 1. Internal clean for parsing (comments)
                 clean_text = remove_comments(latest_text)
                 js = json.loads(clean_text)
                 
-                # [FIX] Smart Bundle Extraction
+                # 2. Bundle detection
                 if "resources" in js:
                     for res_k, res_v in js["resources"].items():
                         if res_v.get("type") == "ZIS::Flow":
@@ -380,20 +364,24 @@ with t_code:
                             st.toast(f"📦 Extracted Flow: {res_k}", icon="✂️")
                             break
 
+                # 3. Clean structure
                 clean_js = clean_flow_logic(js.get("definition", js))
-                formatted_json = json.dumps(clean_js, indent=2, sort_keys=False) # sort_keys=False prevents reordering
                 
-                # Only force update if content actually changed (avoids loops)
-                if formatted_json != st.session_state.get("editor_content"):
-                    st.session_state["editor_content"] = formatted_json
-                    st.session_state["editor_key"] += 1
+                # 4. State Update Logic (Smart Refresh)
+                logic_changed = clean_js != st.session_state.get("flow_json")
                 
+                # Update flow logic (source of truth)
                 st.session_state["flow_json"] = clean_js
-                st.toast("Code Validated, Formatted & Saved!", icon="✅")
                 
-                # [FIX] Removed force_refresh() here to stop the blinking loop.
-                # The editor_key update above is enough to refresh the component.
+                # We do NOT update 'editor_content' here to avoid re-formatting/blinking loop
+                # unless you want to force Prettify on every save (which causes the blinking).
+                # Current behavior: Keeps user text as-is, updates backend logic.
                 
+                st.toast("Code Validated & Saved!", icon="✅")
+                
+                if logic_changed:
+                    force_refresh()
+                    
             except json.JSONDecodeError as e: st.error(f"❌ Save Failed: Invalid JSON.\n\nError: {e}")
             except Exception as e: st.error(f"❌ Error: {e}")
     else:
@@ -419,7 +407,6 @@ with t_code:
 with t_vis:
     c1, c2 = st.columns([1, 2])
     curr = st.session_state["flow_json"]
-    # [FIX] Case-insensitive lookup
     states = curr.get("States") or curr.get("states", {})
     keys = list(states.keys())
     
@@ -487,7 +474,6 @@ with t_vis:
                 def_idx = opts.index(current_def) if current_def in opts else 0
                 if opts: step_data["Default"] = st.selectbox("Else (Default Path)", opts, index=def_idx, key=f"sel_choice_def{key_suffix}_{len(opts)}")
                 choices = step_data.get("Choices", [])
-                # Simplified Choice UI for brevity
                 if st.button("➕ Add Rule", key=f"btn_add_rule{key_suffix}"):
                     if opts: 
                         if "Choices" not in step_data: step_data["Choices"] = []
