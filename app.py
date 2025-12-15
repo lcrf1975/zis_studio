@@ -38,26 +38,46 @@ def remove_comments(json_str):
     except:
         return json_str
 
-# [NEW HELPER] Normalize Keys to PascalCase (ZIS Standard)
-# This fixes the "startAt" vs "StartAt" API error automatically.
+# [FIXED] Normalize Keys to PascalCase (Comprehensive ZIS Support)
 def normalize_zis_keys(obj):
     if isinstance(obj, dict):
         new_obj = {}
-        # List of keys that MUST be capitalized for ZIS API
+        # Complete list of ZIS / ASL keys that must be PascalCase
         zis_keys = {
+            # Structure
             "startat": "StartAt", "states": "States", "type": "Type",
             "next": "Next", "default": "Default", "choices": "Choices",
             "parameters": "Parameters", "actionname": "ActionName",
-            "variable": "Variable", "stringequals": "StringEquals",
-            "numericequals": "NumericEquals", "booleanequals": "BooleanEquals",
-            "result": "Result", "resultpath": "ResultPath", "end": "End",
-            "comment": "Comment", "inputpath": "InputPath", "outputpath": "OutputPath"
+            "end": "End", "comment": "Comment", "definition": "Definition",
+            
+            # Paths
+            "inputpath": "InputPath", "outputpath": "OutputPath", 
+            "resultpath": "ResultPath", "result": "Result", "itemspath": "ItemsPath",
+            
+            # Error Handling & Retry
+            "cause": "Cause", "error": "Error", "catch": "Catch", 
+            "retry": "Retry", "errorequals": "ErrorEquals",
+            "intervalseconds": "IntervalSeconds", "maxattempts": "MaxAttempts", 
+            "backoffrate": "BackoffRate",
+
+            # Choice Operators
+            "variable": "Variable", 
+            "stringequals": "StringEquals", "stringlessthan": "StringLessThan",
+            "stringgreaterthan": "StringGreaterThan", "stringgreaterthanequals": "StringGreaterThanEquals",
+            "stringlessthanequals": "StringLessThanEquals", "stringmatches": "StringMatches",
+            "numericequals": "NumericEquals", "numericlessthan": "NumericLessThan",
+            "numericgreaterthan": "NumericGreaterThan", "numericgreaterthanequals": "NumericGreaterThanEquals",
+            "numericlessthanequals": "NumericLessThanEquals",
+            "booleanequals": "BooleanEquals",
+            "timestampgreaterthan": "TimestampGreaterThan", "timestamplessthan": "TimestampLessThan",
+            "timestampgreaterthanequals": "TimestampGreaterThanEquals", "timestamplessthanequals": "TimestampLessThanEquals",
+            "ispresent": "IsPresent", "isnull": "IsNull"
         }
         for k, v in obj.items():
-            # Check if key is a ZIS keyword (case-insensitive match)
             lower_k = k.lower()
-            final_key = zis_keys.get(lower_k, k) # Use PascalCase if known, else original
-            new_obj[final_key] = normalize_zis_keys(v) # Recurse
+            # If known ZIS key, use PascalCase; else keep original (e.g. API param keys)
+            final_key = zis_keys.get(lower_k, k) 
+            new_obj[final_key] = normalize_zis_keys(v) 
         return new_obj
     elif isinstance(obj, list):
         return [normalize_zis_keys(item) for item in obj]
@@ -101,8 +121,9 @@ for key in ["zd_subdomain", "zd_email", "zd_token"]:
     if key not in st.session_state: st.session_state[key] = ""
 
 # ==========================================
-# 2. LOGIC ENGINE
+# 2. LOGIC ENGINE (Internal Version)
 # ==========================================
+# Ideally import from zis_engine, but keeping self-contained for app portability
 class ZISFlowEngine:
     def __init__(self, flow_definition, input_data, connections, configs):
         self.flow = flow_definition
@@ -122,9 +143,21 @@ class ZISFlowEngine:
     def resolve_path(self, path, data):
         if not isinstance(path, str) or not path.startswith("$."): return path
         try:
+            if path == "$": return data
             matches = parse(path.replace("$.", "")).find(data)
             return matches[0].value if matches else None
         except: return None
+        
+    def set_nested_value(self, path, value):
+        """Fixes root overwrite bug"""
+        if not path or not path.startswith("$."): return
+        keys = path.replace("$.", "").split(".")
+        current = self.context
+        for key in keys[:-1]:
+            if key not in current or not isinstance(current[key], dict):
+                current[key] = {}
+            current = current[key]
+        current[keys[-1]] = value
 
     def interpolate(self, text):
         if not isinstance(text, str): return text
@@ -174,17 +207,26 @@ class ZISFlowEngine:
             sType = state.get("Type")
             if sType == "Action":
                 res = self.run_action(curr, state)
-                if "ResultPath" in state: self.context[state["ResultPath"].split(".")[-1]] = res
+                if "ResultPath" in state: self.set_nested_value(state["ResultPath"], res)
                 curr = state.get("Next")
             elif sType == "Choice":
                 curr = state.get("Default")
+                matched = False
                 for rule in state.get("Choices", []):
                     val = self.resolve_path(rule.get("Variable"), self.context)
-                    match_val = rule.get("StringEquals") or rule.get("Contains")
-                    if str(match_val) in str(val): 
-                        curr = rule.get("Next"); break
+                    
+                    # Basic Logic check
+                    if "StringEquals" in rule and str(rule["StringEquals"]) == str(val):
+                        curr = rule["Next"]; matched = True; break
+                    if "BooleanEquals" in rule and bool(rule["BooleanEquals"]) == bool(val):
+                        curr = rule["Next"]; matched = True; break
+                
             elif sType == "Pass":
-                if "Result" in state: self.context[state.get("ResultPath", "$.result").split(".")[-1]] = state["Result"]
+                if "Result" in state: 
+                    # If ResultPath exists, map result there
+                    target_path = state.get("ResultPath")
+                    if target_path:
+                        self.set_nested_value(target_path, state["Result"])
                 curr = state.get("Next")
             elif sType == "Wait":
                 time.sleep(float(state.get("Seconds", 1)))
@@ -529,7 +571,9 @@ with t_dep:
                     try:
                         status.write(f"Checking integration: {target_int}...")
                         requests.post(f"{get_base_url()}/integrations", auth=get_auth(), json={"name": target_int, "display_name": target_int}, headers={"Content-Type": "application/json"})
-                        safe_bun = bun_name.lower().replace("-", "_").replace(" ", "")
+                        
+                        # [FIX] Safer Bundle Name Sanatization
+                        safe_bun = bun_name.lower().strip().replace("-", "_").replace(" ", "")
                         res_name = f"{safe_bun}_flow"
                         
                         # [FIX] Normalize BEFORE deploying to ensure valid ZIS API payload
