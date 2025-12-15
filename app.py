@@ -27,6 +27,7 @@ def force_refresh():
     else:
         st.experimental_rerun()
 
+# [HELPER] Remove Comments for JSON parsing
 def remove_comments(json_str):
     pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
     def replace(match):
@@ -36,6 +37,32 @@ def remove_comments(json_str):
         return re.sub(pattern, replace, json_str)
     except:
         return json_str
+
+# [NEW HELPER] Normalize Keys to PascalCase (ZIS Standard)
+# This fixes the "startAt" vs "StartAt" API error automatically.
+def normalize_zis_keys(obj):
+    if isinstance(obj, dict):
+        new_obj = {}
+        # List of keys that MUST be capitalized for ZIS API
+        zis_keys = {
+            "startat": "StartAt", "states": "States", "type": "Type",
+            "next": "Next", "default": "Default", "choices": "Choices",
+            "parameters": "Parameters", "actionname": "ActionName",
+            "variable": "Variable", "stringequals": "StringEquals",
+            "numericequals": "NumericEquals", "booleanequals": "BooleanEquals",
+            "result": "Result", "resultpath": "ResultPath", "end": "End",
+            "comment": "Comment", "inputpath": "InputPath", "outputpath": "OutputPath"
+        }
+        for k, v in obj.items():
+            # Check if key is a ZIS keyword (case-insensitive match)
+            lower_k = k.lower()
+            final_key = zis_keys.get(lower_k, k) # Use PascalCase if known, else original
+            new_obj[final_key] = normalize_zis_keys(v) # Recurse
+        return new_obj
+    elif isinstance(obj, list):
+        return [normalize_zis_keys(item) for item in obj]
+    else:
+        return obj
 
 def clean_flow_logic(flow_data):
     if not isinstance(flow_data, dict): return flow_data
@@ -52,7 +79,7 @@ st.set_page_config(
     page_title="ZIS Studio Beta", 
     layout="wide", 
     page_icon="⚡",
-    initial_sidebar_state="collapsed" 
+    initial_sidebar_state="expanded"
 )
 
 st.markdown("""
@@ -107,10 +134,9 @@ class ZISFlowEngine:
         return text
 
     def run_action(self, state_name, state_def):
-        action_name = state_def.get("ActionName") or state_def.get("actionName", "Unknown")
+        action_name = state_def.get("ActionName", "Unknown")
         params = {}
-        raw_params = state_def.get("Parameters") or state_def.get("parameters", {})
-        for k, v in raw_params.items():
+        for k, v in state_def.get("Parameters", {}).items():
             key = k[:-2] if k.endswith(".$") else k
             val = self.resolve_path(v, self.context) if k.endswith(".$") else self.interpolate(v)
             params[key] = val
@@ -135,9 +161,8 @@ class ZISFlowEngine:
 
     def run(self):
         flow_def = self.flow.get("definition", self.flow)
-        curr = flow_def.get("StartAt") or flow_def.get("startAt")
-        states = flow_def.get("States") or flow_def.get("states", {})
-        
+        curr = flow_def.get("StartAt")
+        states = flow_def.get("States", {})
         self.log("START", f"Flow: {self.context.get('flow_name', 'Local')}")
         steps = 0
         while curr and steps < 50:
@@ -146,38 +171,26 @@ class ZISFlowEngine:
             state = states.get(curr)
             if not state: break
             
-            # Smart normalization for type
-            sType = (state.get("Type") or state.get("type", "Pass")).title()
-            
+            sType = state.get("Type")
             if sType == "Action":
                 res = self.run_action(curr, state)
-                res_path = state.get("ResultPath") or state.get("resultPath")
-                if res_path: self.context[res_path.split(".")[-1]] = res
-                curr = state.get("Next") or state.get("next")
-            
+                if "ResultPath" in state: self.context[state["ResultPath"].split(".")[-1]] = res
+                curr = state.get("Next")
             elif sType == "Choice":
-                curr = state.get("Default") or state.get("default")
-                choices = state.get("Choices") or state.get("choices", [])
-                for rule in choices:
-                    var_path = rule.get("Variable") or rule.get("variable")
-                    val = self.resolve_path(var_path, self.context)
-                    match_val = rule.get("StringEquals") or rule.get("stringEquals") or rule.get("Contains") or rule.get("contains")
+                curr = state.get("Default")
+                for rule in state.get("Choices", []):
+                    val = self.resolve_path(rule.get("Variable"), self.context)
+                    match_val = rule.get("StringEquals") or rule.get("Contains")
                     if str(match_val) in str(val): 
-                        curr = rule.get("Next") or rule.get("next"); break
-            
+                        curr = rule.get("Next"); break
             elif sType == "Pass":
-                res_path = state.get("ResultPath") or state.get("resultPath") or "$.result"
-                res_val = state.get("Result") or state.get("result")
-                if res_val: self.context[res_path.split(".")[-1]] = res_val
-                curr = state.get("Next") or state.get("next")
-            
+                if "Result" in state: self.context[state.get("ResultPath", "$.result").split(".")[-1]] = state["Result"]
+                curr = state.get("Next")
             elif sType == "Wait":
-                time.sleep(float(state.get("Seconds") or state.get("seconds", 1)))
-                curr = state.get("Next") or state.get("next")
-            
+                time.sleep(float(state.get("Seconds", 1)))
+                curr = state.get("Next")
             elif sType in ["Succeed", "Fail"]: break
-            if state.get("End") or state.get("end"): break
-            
+            if state.get("End"): break
         return self.logs, self.context, self.visited_states
 
 # ==========================================
@@ -205,13 +218,13 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
         
         visited = set(highlight_path) if highlight_path else set()
         
-        start = flow_def.get("StartAt") or flow_def.get("startAt")
+        # Safe Get with Normalization
+        start = flow_def.get("StartAt")
         
         dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled")
         if start: dot.edge("START", start)
 
-        states = flow_def.get("States") or flow_def.get("states", {})
-
+        states = flow_def.get("States", {})
         for k, v in states.items():
             fill = "#e0e0e0" 
             pen = "1"
@@ -221,29 +234,18 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
                 if highlight_path and k == highlight_path[-1]: fill = "#81C784"
             
             if selected_step and k == selected_step:
-                fill = "#FFF59D" # Highlight
+                fill = "#FFF59D" 
                 pen = "3"
 
-            # Normalize Type display
-            sType = (v.get("Type") or v.get("type", "Unknown")).title()
+            sType = v.get("Type", "Unknown")
             dot.node(k, f"{k}\n({sType})", fillcolor=fill, penwidth=pen)
             
-            nxt = v.get("Next") or v.get("next")
-            if nxt: dot.edge(k, nxt)
-            
-            dflt = v.get("Default") or v.get("default")
-            if dflt: dot.edge(k, dflt, label="Default")
-            
-            choices = v.get("Choices") or v.get("choices", [])
-            for c in choices:
-                cNxt = c.get("Next") or c.get("next")
-                if cNxt: dot.edge(k, cNxt, label="If Match")
-            
-            is_end = v.get("End") or v.get("end")
-            if is_end: 
+            if "Next" in v: dot.edge(k, v["Next"])
+            if "Default" in v: dot.edge(k, v["Default"], label="Default")
+            for c in v.get("Choices", []): dot.edge(k, c.get("Next"), label="If Match")
+            if v.get("End"): 
                 dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
                 dot.edge(k, "END")
-        
         st.graphviz_chart(dot) 
     except: pass
 
@@ -324,8 +326,11 @@ with t_imp:
                             found = False
                             for k, v in r.json().get("resources", {}).items():
                                 if "Flow" in v.get("type", ""):
-                                    st.session_state["flow_json"] = clean_flow_logic(v["properties"]["definition"])
-                                    st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+                                    # [FIX] Normalize immediately upon load
+                                    raw_def = clean_flow_logic(v["properties"]["definition"])
+                                    norm_def = normalize_zis_keys(raw_def)
+                                    st.session_state["flow_json"] = norm_def
+                                    st.session_state["editor_content"] = json.dumps(norm_def, indent=2)
                                     st.session_state["current_bundle_name"] = item['bun']
                                     st.session_state["editor_key"] += 1 
                                     st.toast("Flow Loaded Successfully!", icon="🎉")
@@ -352,10 +357,12 @@ with t_code:
         if resp and resp.get("type") == "submit":
             try:
                 latest_text = resp.get("text", "")
+                
+                # 1. Internal clean for parsing
                 clean_text = remove_comments(latest_text)
                 js = json.loads(clean_text)
                 
-                # Bundle Detect
+                # 2. Smart Bundle Detect
                 if "resources" in js:
                     for res_k, res_v in js["resources"].items():
                         if res_v.get("type") == "ZIS::Flow":
@@ -363,18 +370,23 @@ with t_code:
                             st.toast(f"📦 Extracted Flow: {res_k}", icon="✂️")
                             break
 
+                # 3. Clean structure & [FIX] NORMALIZE KEYS TO PASCALCASE
                 clean_js = clean_flow_logic(js.get("definition", js))
-                formatted_json = json.dumps(clean_js, indent=2, sort_keys=False)
+                norm_js = normalize_zis_keys(clean_js)
+                
+                formatted_json = json.dumps(norm_js, indent=2, sort_keys=False)
                 
                 if formatted_json != st.session_state.get("editor_content"):
                     st.session_state["editor_content"] = formatted_json
                     st.session_state["editor_key"] += 1
                 
-                st.session_state["flow_json"] = clean_js
-                st.toast("Code Validated & Saved!", icon="✅")
+                st.session_state["flow_json"] = norm_js
+                st.toast("Code Validated, Normalized & Saved!", icon="✅")
                 
-                if clean_js != st.session_state.get("flow_json"):
+                # Refresh if keys changed (e.g., startAt -> StartAt)
+                if norm_js != st.session_state.get("flow_json"):
                     force_refresh()
+                    
             except json.JSONDecodeError as e: st.error(f"❌ Save Failed: Invalid JSON.\n\nError: {e}")
             except Exception as e: st.error(f"❌ Error: {e}")
     else:
@@ -389,18 +401,20 @@ with t_code:
                             js = res_v["properties"]["definition"]
                             break
                 clean_js = clean_flow_logic(js.get("definition", js))
-                formatted = json.dumps(clean_js, indent=2)
-                st.session_state["flow_json"] = clean_js
-                st.session_state["editor_content"] = formatted
-                st.toast("Saved & Formatted", icon="💾")
+                norm_js = normalize_zis_keys(clean_js)
+                
+                st.session_state["flow_json"] = norm_js
+                st.session_state["editor_content"] = json.dumps(norm_js, indent=2)
+                st.toast("Saved & Normalized", icon="💾")
                 force_refresh()
             except: st.error("Invalid JSON")
 
 # --- TAB 4: DESIGNER ---
 with t_vis:
     c1, c2 = st.columns([1, 2])
+    # Logic is now safe because keys are normalized to PascalCase
     curr = st.session_state["flow_json"]
-    states = curr.get("States") or curr.get("states", {})
+    states = curr.get("States", {})
     keys = list(states.keys())
     
     with c1:
@@ -424,9 +438,7 @@ with t_vis:
                     elif new_step_type == "Action": new_def["ActionName"] = "zis:common:action:fetch"; new_def["Parameters"] = {}
                     else: new_def["End"] = True
                     
-                    target_key = "States" if "States" in st.session_state["flow_json"] else "states"
-                    if target_key not in st.session_state["flow_json"]: st.session_state["flow_json"][target_key] = {}
-                    st.session_state["flow_json"][target_key][new_step_name] = new_def
+                    st.session_state["flow_json"]["States"][new_step_name] = new_def
                     st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
                     st.success(f"Created {new_step_name}")
                     force_refresh()
@@ -435,8 +447,7 @@ with t_vis:
         st.divider()
         if selected_step and selected_step != "(Select a Step)" and selected_step in states:
             step_data = states[selected_step]
-            # [FIX] Force Type Normalization (title case) so logic matches "Choice" correctly
-            step_type = (step_data.get("Type") or step_data.get("type", "")).title()
+            step_type = step_data.get("Type")
             st.markdown(f"### ⚙️ {selected_step} `[{step_type}]`")
             
             key_suffix = f"_{selected_step}"
@@ -446,63 +457,42 @@ with t_vis:
                 if is_end: step_data["End"] = True; step_data.pop("Next", None)
                 else:
                     step_data.pop("End", None)
-                    current_next = step_data.get("Next") or step_data.get("next", "")
+                    current_next = step_data.get("Next", "")
                     next_options = [opt for opt in keys if opt != selected_step]
                     if next_options:
                         idx = next_options.index(current_next) if current_next in next_options else 0
-                        new_next = st.selectbox("Go to Next", next_options, index=idx, key=f"sel_next_step{key_suffix}_{len(next_options)}")
-                        step_data["Next"] = new_next
-                        if "next" in step_data: del step_data["next"]
+                        step_data["Next"] = st.selectbox("Go to Next", next_options, index=idx, key=f"sel_next_step{key_suffix}_{len(next_options)}")
                     else: st.warning("Create another step to link to.")
 
             if step_type == "Action":
-                current_action = step_data.get("ActionName") or step_data.get("actionName", "")
-                step_data["ActionName"] = st.text_input("Action Name", value=current_action, key=f"inp_act_name{key_suffix}")
-                if "actionName" in step_data: del step_data["actionName"]
-                
-                raw_params = step_data.get("Parameters") or step_data.get("parameters", {})
-                current_params = json.dumps(raw_params, indent=2)
+                step_data["ActionName"] = st.text_input("Action Name", value=step_data.get("ActionName", ""), key=f"inp_act_name{key_suffix}")
+                current_params = json.dumps(step_data.get("Parameters", {}), indent=2)
                 new_params = st.text_area("Parameters JSON", value=current_params, height=150, key=f"inp_act_params{key_suffix}")
-                try: 
-                    step_data["Parameters"] = json.loads(new_params)
-                    if "parameters" in step_data: del step_data["parameters"]
+                try: step_data["Parameters"] = json.loads(new_params)
                 except: st.error("Invalid JSON")
-            
             elif step_type == "Wait":
-                current_sec = step_data.get("Seconds") or step_data.get("seconds", 5)
-                step_data["Seconds"] = st.number_input("Wait (Sec)", min_value=1, value=int(current_sec), key=f"inp_wait_sec{key_suffix}")
-            
+                step_data["Seconds"] = st.number_input("Wait (Sec)", min_value=1, value=int(step_data.get("Seconds", 5)), key=f"inp_wait_sec{key_suffix}")
             elif step_type == "Choice":
-                current_def = step_data.get("Default") or step_data.get("default", "")
+                current_def = step_data.get("Default", "")
                 opts = [o for o in keys if o != selected_step]
                 def_idx = opts.index(current_def) if current_def in opts else 0
-                if opts: 
-                    new_def = st.selectbox("Else (Default Path)", opts, index=def_idx, key=f"sel_choice_def{key_suffix}_{len(opts)}")
-                    step_data["Default"] = new_def
-                    if "default" in step_data: del step_data["default"]
-
-                choices = step_data.get("Choices") or step_data.get("choices", [])
+                if opts: step_data["Default"] = st.selectbox("Else (Default Path)", opts, index=def_idx, key=f"sel_choice_def{key_suffix}_{len(opts)}")
+                
+                choices = step_data.get("Choices", [])
                 for i, choice in enumerate(choices):
                     with st.expander(f"Rule #{i+1}", expanded=False):
-                        curr_var = choice.get("Variable") or choice.get("variable", "$.input...")
-                        choice["Variable"] = st.text_input("Variable", value=curr_var, key=f"c_var_{i}{key_suffix}")
+                        choice["Variable"] = st.text_input("Variable", value=choice.get("Variable", "$.input..."), key=f"c_var_{i}{key_suffix}")
+                        choice["StringEquals"] = st.text_input("Equals (String)", value=str(choice.get("StringEquals", "")), key=f"c_val_{i}{key_suffix}")
                         
-                        curr_val = choice.get("StringEquals") or choice.get("stringEquals") or ""
-                        choice["StringEquals"] = st.text_input("Equals (String)", value=str(curr_val), key=f"c_val_{i}{key_suffix}")
-                        
-                        curr_nxt = choice.get("Next") or choice.get("next", "")
+                        curr_nxt = choice.get("Next", "")
                         n_idx = opts.index(curr_nxt) if curr_nxt in opts else 0
                         choice["Next"] = st.selectbox("Go To", opts, index=n_idx, key=f"c_next_{i}{key_suffix}")
                         
-                        for k in ["variable", "stringEquals", "next"]:
-                            if k in choice: del choice[k]
-                            
+                        if st.button("🗑️", key=f"del_rule_{i}{key_suffix}"): choices.pop(i); force_refresh()
+
                 if st.button("➕ Add Rule", key=f"btn_add_rule{key_suffix}"):
                     if opts: 
-                        # Ensure standard key exists
                         if "Choices" not in step_data: step_data["Choices"] = []
-                        if "choices" in step_data: step_data["Choices"] = step_data.pop("choices")
-                        
                         step_data["Choices"].append({"Variable": "$.input", "StringEquals": "", "Next": opts[0]})
                         force_refresh()
 
@@ -510,8 +500,7 @@ with t_vis:
             col_del, col_save = st.columns(2)
             with col_del:
                 if st.button("🗑️ Delete Step", type="secondary", key=f"btn_del_step{key_suffix}"):
-                    target_key = "States" if "States" in curr else "states"
-                    del st.session_state["flow_json"][target_key][selected_step]
+                    del st.session_state["flow_json"]["States"][selected_step]
                     st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
                     force_refresh()
             with col_save:
@@ -542,8 +531,12 @@ with t_dep:
                         requests.post(f"{get_base_url()}/integrations", auth=get_auth(), json={"name": target_int, "display_name": target_int}, headers={"Content-Type": "application/json"})
                         safe_bun = bun_name.lower().replace("-", "_").replace(" ", "")
                         res_name = f"{safe_bun}_flow"
+                        
+                        # [FIX] Normalize BEFORE deploying to ensure valid ZIS API payload
                         clean_def = clean_flow_logic(st.session_state["flow_json"])
-                        payload = {"zis_template_version": "2019-10-14", "name": safe_bun, "resources": {res_name: {"type": "ZIS::Flow", "properties": {"name": res_name, "definition": clean_def}}}}
+                        norm_def = normalize_zis_keys(clean_def)
+                        
+                        payload = {"zis_template_version": "2019-10-14", "name": safe_bun, "resources": {res_name: {"type": "ZIS::Flow", "properties": {"name": res_name, "definition": norm_def}}}}
                         r = requests.post(f"{get_base_url()}/{target_int}/bundles", auth=get_auth(), json=payload, headers={"Content-Type": "application/json"})
                         if r.status_code in [200, 201]:
                             st.balloons(); status.update(label="Deployment Successful!", state="complete"); st.success(f"Deployed **{safe_bun}** to integration **{target_int}**")
@@ -558,7 +551,8 @@ with t_deb:
         st.markdown("### Input")
         inp = st.text_area("JSON Input", '{"ticket": {"id": 123}}', height=200, key="debug_input")
         if st.button("▶️ Run Simulation", type="primary", key="btn_run_debug"):
-            eng = ZISFlowEngine(st.session_state["flow_json"], json.loads(inp), {}, {})
+            # Ensure logic engine runs on normalized code
+            eng = ZISFlowEngine(normalize_zis_keys(st.session_state["flow_json"]), json.loads(inp), {}, {})
             logs, ctx, path = eng.run()
             st.session_state["debug_res"] = (logs, ctx, path)
         st.divider()
