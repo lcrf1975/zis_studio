@@ -169,15 +169,25 @@ class ZISFlowEngine:
                 for rule in choices:
                     variable = self.resolve_path(rule.get("Variable"), self.context)
                     
-                    # Extended Logic Support
-                    if "StringEquals" in rule and str(variable) == str(rule["StringEquals"]):
-                        matched = True
-                    elif "BooleanEquals" in rule and bool(variable) == bool(rule["BooleanEquals"]):
-                        matched = True
-                    elif "NumericEquals" in rule:
-                        try:
-                            if float(variable) == float(rule["NumericEquals"]): matched = True
-                        except: pass
+                    # [UPDATE] Extended Logic Support for Comparisons
+                    try:
+                        if "StringEquals" in rule and str(variable) == str(rule["StringEquals"]):
+                            matched = True
+                        elif "BooleanEquals" in rule and bool(variable) == bool(rule["BooleanEquals"]):
+                            matched = True
+                        elif "NumericEquals" in rule and float(variable) == float(rule["NumericEquals"]):
+                            matched = True
+                        elif "NumericGreaterThan" in rule and float(variable) > float(rule["NumericGreaterThan"]):
+                            matched = True
+                        elif "NumericGreaterThanEquals" in rule and float(variable) >= float(rule["NumericGreaterThanEquals"]):
+                            matched = True
+                        elif "NumericLessThan" in rule and float(variable) < float(rule["NumericLessThan"]):
+                            matched = True
+                        elif "NumericLessThanEquals" in rule and float(variable) <= float(rule["NumericLessThanEquals"]):
+                            matched = True
+                    except:
+                        # Fallback for type conversion errors
+                        pass
                     
                     if matched:
                         next_state = rule["Next"]

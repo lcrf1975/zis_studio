@@ -82,6 +82,10 @@ def normalize_zis_keys(obj):
             "retry": "Retry", "errorequals": "ErrorEquals",
             "variable": "Variable", "stringequals": "StringEquals", 
             "booleanequals": "BooleanEquals", "numericequals": "NumericEquals",
+            "numericgreaterthan": "NumericGreaterThan", 
+            "numericgreaterthanequals": "NumericGreaterThanEquals",
+            "numericlessthan": "NumericLessThan", 
+            "numericlessthanequals": "NumericLessThanEquals",
             "ispresent": "IsPresent", "isnull": "IsNull", "seconds": "Seconds"
         }
         for k, v in obj.items():
@@ -189,125 +193,10 @@ for key in ["zd_subdomain", "zd_email", "zd_token"]:
     if key not in st.session_state: st.session_state[key] = ""
 
 # ==========================================
-# 2. LOGIC ENGINE
+# 2. LOGIC ENGINE (Moved to zis_engine.py but kept simple ref here for debug tab import if needed)
 # ==========================================
-class ZISFlowEngine:
-    def __init__(self, flow_definition, input_data, connections, configs):
-        self.flow = flow_definition
-        self.context = {
-            "input": input_data,
-            "connections": connections,
-            "config": configs,
-            "flow_name": flow_definition.get("Comment", "Local Flow")
-        }
-        self.logs = []
-        self.visited_states = []
-
-    def log(self, step, message, status="INFO"):
-        entry = f"[{time.strftime('%H:%M:%S')}] {step}: {message} ({status})"
-        self.logs.append(entry)
-
-    def resolve_path(self, path, data):
-        if not isinstance(path, str) or not path.startswith("$."): return path
-        try:
-            if path == "$": return data
-            matches = parse(path.replace("$.", "")).find(data)
-            return matches[0].value if matches else None
-        except: return None
-        
-    def set_nested_value(self, path, value):
-        if not path or not path.startswith("$."): return
-        keys = path.replace("$.", "").split(".")
-        current = self.context
-        for key in keys[:-1]:
-            if key not in current or not isinstance(current[key], dict):
-                current[key] = {}
-            current = current[key]
-        current[keys[-1]] = value
-
-    def interpolate(self, text):
-        if not isinstance(text, str): return text
-        for ph in re.findall(r'\{\{(.*?)\}\}', text):
-            val = self.resolve_path(ph, self.context)
-            text = text.replace(f"{{{{{ph}}}}}", str(val))
-        return text
-
-    def run_action(self, state_name, state_def):
-        action_name = get_zis_key(state_def, "ActionName", "Unknown")
-        params = {}
-        raw_params = get_zis_key(state_def, "Parameters", {})
-        
-        for k, v in raw_params.items():
-            key = k[:-2] if k.endswith(".$") else k
-            val = self.resolve_path(v, self.context) if k.endswith(".$") else self.interpolate(v)
-            params[key] = val
-
-        self.log(state_name, f"Action: {action_name}", "RUNNING")
-        url = params.get("url", "")
-        method = params.get("method", "GET")
-        
-        if url:
-            try:
-                resp = requests.request(method, url, json=params.get("body"))
-                code = resp.status_code
-                if code >= 400: self.log(state_name, f"API {code}: {resp.text[:50]}...", "ERROR")
-                else: self.log(state_name, f"API {code}", "SUCCESS")
-                return resp.json() if resp.content else {}
-            except Exception as e:
-                self.log(state_name, f"Error: {e}", "ERROR")
-                return {"error": str(e)}
-        else:
-            self.log(state_name, "Mock Mode (No URL)", "WARNING")
-            return {"mock": True, "params": params}
-
-    def run(self):
-        flow_def = self.flow.get("definition", self.flow)
-        curr = get_zis_key(flow_def, "StartAt")
-        states = get_zis_key(flow_def, "States", {})
-        
-        self.log("START", f"Flow: {self.context.get('flow_name', 'Local')}")
-        steps = 0
-        while curr and steps < 50:
-            steps += 1
-            self.visited_states.append(curr)
-            state = states.get(curr)
-            if not state: break
-            
-            sType = get_zis_key(state, "Type")
-            next_step = get_zis_key(state, "Next")
-            result_path = get_zis_key(state, "ResultPath")
-            
-            if sType == "Action":
-                res = self.run_action(curr, state)
-                if result_path: self.set_nested_value(result_path, res)
-                curr = next_step
-            elif sType == "Choice":
-                curr = get_zis_key(state, "Default")
-                matched = False
-                choices = get_zis_key(state, "Choices", [])
-                for rule in choices:
-                    var_path = get_zis_key(rule, "Variable")
-                    val = self.resolve_path(var_path, self.context)
-                    
-                    str_eq = get_zis_key(rule, "StringEquals")
-                    rule_next = get_zis_key(rule, "Next")
-                    
-                    if str_eq is not None and str(str_eq) == str(val):
-                        curr = rule_next; matched = True; break
-                
-            elif sType == "Pass":
-                res_val = get_zis_key(state, "Result")
-                if res_val is not None and result_path:
-                    self.set_nested_value(result_path, res_val)
-                curr = next_step
-            elif sType == "Wait":
-                time.sleep(float(get_zis_key(state, "Seconds", 1)))
-                curr = next_step
-            elif sType in ["Succeed", "Fail"]: break
-            
-            if get_zis_key(state, "End"): break
-            
-        return self.logs, self.context, self.visited_states
+# (Importing from file in actual usage, but defining class here for standalone run)
+from zis_engine import ZISFlowEngine
 
 # ==========================================
 # 3. HELPERS & GRAPH
@@ -460,16 +349,10 @@ with t_code:
         resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, key=dynamic_key)
         
         # [FIX] Enhanced Sync Logic
-        # We capture the text whenever it changes, not just on submit.
         if resp and resp.get("text"):
-            # 1. Update the raw string content immediately
             st.session_state["editor_content"] = resp["text"]
-            
-            # 2. Attempt to parse JSON immediately to keep flow_json in sync
-            # This handles the "Paste and Switch Tab" scenario
             is_valid, _ = try_sync_from_editor(force_ui_update=False)
 
-            # 3. If explicit submit, force refresh UI elements
             if resp.get("type") == "submit":
                 if is_valid:
                     try_sync_from_editor(force_ui_update=True)
@@ -480,14 +363,11 @@ with t_code:
 
 # --- TAB 4: VISUAL DESIGNER ---
 with t_vis:
-    # [FIX] Critical Guard: Ensure flow_json is fresh from editor before rendering
-    # If the user pasted code but didn't click "Save", we trust the editor content IF it is valid.
     sync_ok, _ = try_sync_from_editor(force_ui_update=False)
     
     if not sync_ok:
-        st.error("⚠️ **Syntax Error:** The code in the 'Code Editor' tab is invalid JSON. Please fix it before using the Visual Designer to avoid losing your changes.")
+        st.error("⚠️ **Syntax Error:** The code in the 'Code Editor' tab is invalid JSON. Please fix it before using the Visual Designer.")
     else:
-        # Proceed only if JSON is valid
         c1, c2 = st.columns([1, 2])
         curr = st.session_state["flow_json"]
         states = get_zis_key(curr, "States", {})
@@ -515,10 +395,7 @@ with t_vis:
             st.divider()
             if selected_step and selected_step != "(Select a Step)" and selected_step in states:
                 step_data = states[selected_step]
-                
-                # [CRITICAL] Sanitize: Fix casing conflicts immediately
                 sanitize_step(step_data)
-                
                 step_type = get_zis_key(step_data, "Type")
                 st.markdown(f"### ⚙️ {selected_step} `[{step_type}]`")
                 
@@ -534,21 +411,13 @@ with t_vis:
                         if "Next" in step_data: del step_data["Next"]
                     else:
                         if "End" in step_data: del step_data["End"]
-                        
-                        # [SAFE READ]
                         current_next = get_zis_key(step_data, "Next", "")
                         next_options = [opt for opt in keys if opt != selected_step]
-                        
-                        # [SMART MATCH] Find correct index even if casing differs
                         idx = find_best_match_index(next_options, current_next)
-                        
-                        # [SAFE DISPLAY] Only default to 0 if match found, else show placeholder
                         final_options = ["(Select a Step)"] + next_options if idx == -1 else next_options
                         final_idx = 0 if idx == -1 else idx
                         
                         selected_val = st.selectbox("Go to Next", final_options, index=final_idx, key=f"sel_next_{selected_step}_{current_next}")
-                        
-                        # [SAFE WRITE] Only write if user explicitly changed valid value
                         if selected_val != "(Select a Step)" and selected_val != current_next:
                             step_data["Next"] = selected_val
 
@@ -580,23 +449,63 @@ with t_vis:
                     choices = get_zis_key(step_data, "Choices", [])
                     if "Choices" not in step_data and "choices" in step_data: step_data["Choices"] = step_data.pop("choices")
                     
+                    # [UPDATE] Dynamic Operator Handling
+                    possible_ops = [
+                        "StringEquals", "BooleanEquals", "NumericEquals", 
+                        "NumericGreaterThan", "NumericGreaterThanEquals", 
+                        "NumericLessThan", "NumericLessThanEquals"
+                    ]
+                    
                     for i, choice in enumerate(choices):
                         with st.expander(f"Rule #{i+1}", expanded=False):
+                            # 1. Detect Operator
+                            current_op = "StringEquals" # Default
+                            current_val = ""
+                            
+                            for op in possible_ops:
+                                found = get_zis_key(choice, op)
+                                if found is not None:
+                                    current_op = op
+                                    current_val = found
+                                    break
+                            
+                            # 2. Variable Input
                             v_val = get_zis_key(choice, "Variable", "$.input...")
-                            s_val = str(get_zis_key(choice, "StringEquals", ""))
-                            n_val = get_zis_key(choice, "Next", "")
-                            
                             nv = st.text_input("Variable", value=v_val, key=f"c_var_{i}{key_suffix}")
-                            ns = st.text_input("Equals", value=s_val, key=f"c_val_{i}{key_suffix}")
-                            
                             if nv != v_val: choice["Variable"] = nv
-                            if ns != s_val: choice["StringEquals"] = ns
                             
+                            # 3. Operator & Value Input
+                            col_op, col_val = st.columns([1, 1])
+                            with col_op:
+                                sel_op = st.selectbox("Condition", possible_ops, index=possible_ops.index(current_op), key=f"c_op_{i}{key_suffix}")
+                            with col_val:
+                                new_val_str = st.text_input("Value", value=str(current_val), key=f"c_val_{i}{key_suffix}")
+                            
+                            # 4. Save Logic (If changed)
+                            if sel_op != current_op or new_val_str != str(current_val):
+                                # Remove old operator
+                                if current_op in choice: del choice[current_op]
+                                if current_op.lower() in choice: del choice[current_op.lower()]
+                                
+                                # Convert new value
+                                final_val = new_val_str
+                                if "Numeric" in sel_op:
+                                    try: 
+                                        if "." in new_val_str: final_val = float(new_val_str)
+                                        else: final_val = int(new_val_str)
+                                    except: pass # Keep string if fail
+                                elif "Boolean" in sel_op:
+                                    final_val = (new_val_str.lower() == "true")
+                                
+                                choice[sel_op] = final_val
+
+                            # 5. Next Step
+                            n_val = get_zis_key(choice, "Next", "")
                             c_idx = find_best_match_index(opts, n_val)
                             c_opts = ["(Select a Step)"] + opts if c_idx == -1 else opts
                             c_final_idx = 0 if c_idx == -1 else c_idx
                             
-                            sel_choice_next = st.selectbox("Go To", c_opts, index=c_final_idx, key=f"c_next_{i}{key_suffix}")
+                            sel_choice_next = st.selectbox("Then (Go To)", c_opts, index=c_final_idx, key=f"c_next_{i}{key_suffix}")
                             if sel_choice_next != "(Select a Step)" and sel_choice_next != n_val:
                                 choice["Next"] = sel_choice_next
                             
