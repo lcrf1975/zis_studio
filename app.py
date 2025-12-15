@@ -30,6 +30,8 @@ def force_refresh():
 
 def clean_flow_logic(flow_data):
     clean = flow_data.copy()
+    # These keys are top-level Bundle keys, not Flow Logic keys. 
+    # We strip them ONLY if we are inside the Flow Definition context.
     forbidden_keys = ["zis_template_version", "resources", "name", "description", "type", "properties"]
     for key in forbidden_keys:
         if key in clean: del clean[key]
@@ -186,7 +188,6 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [FEATURE KEPT] Added selected_step parameter for highlighting
 def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
@@ -211,7 +212,7 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
                 if highlight_path and k == highlight_path[-1]: 
                     fill = "#81C784" # Darker Green
             
-            # [FEATURE KEPT] Highlight selected step
+            # Highlight selected step
             if selected_step and k == selected_step:
                 fill = "#FFF59D" # Yellow
                 pen = "3"
@@ -346,7 +347,22 @@ with t_code:
             try:
                 latest_text = resp.get("text", "")
                 js = json.loads(latest_text)
-                clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
+
+                # [FIX] Bundle Detection Logic
+                # If user pastes a full Bundle (with "resources"), extract the Flow automatically
+                if "resources" in js:
+                    found_flow = False
+                    for res_k, res_v in js["resources"].items():
+                        if res_v.get("type") == "ZIS::Flow":
+                            js = res_v["properties"]["definition"]
+                            st.toast(f"📦 Extracted Flow from Bundle: {res_k}", icon="✂️")
+                            found_flow = True
+                            break
+                    if not found_flow:
+                        st.warning("Valid Bundle, but no 'ZIS::Flow' found to edit.")
+                        st.stop() # Stop execution to avoid wiping editor
+
+                clean_js = clean_flow_logic(js.get("definition", js))
                 formatted_json = json.dumps(clean_js, indent=2)
                 
                 if formatted_json != st.session_state.get("editor_content"):
@@ -363,7 +379,16 @@ with t_code:
         if st.button("Save", key="save_text"):
             try:
                 js = json.loads(txt)
-                clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
+                
+                # [FIX] Bundle Detection Logic (Fallback Editor)
+                if "resources" in js:
+                    for res_k, res_v in js["resources"].items():
+                        if res_v.get("type") == "ZIS::Flow":
+                            js = res_v["properties"]["definition"]
+                            st.toast(f"Extracted Flow: {res_k}")
+                            break
+
+                clean_js = clean_flow_logic(js.get("definition", js))
                 formatted = json.dumps(clean_js, indent=2)
                 st.session_state["flow_json"] = clean_js
                 st.session_state["editor_content"] = formatted
@@ -479,7 +504,6 @@ with t_vis:
 
     with c2:
         st.markdown("### Visual Flow")
-        # [FEATURE KEPT] Highlight selected step
         render_flow_graph(curr, selected_step=selected_step if selected_step != "(Select a Step)" else None)
 
 # --- TAB 5: DEPLOY ---
