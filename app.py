@@ -21,14 +21,24 @@ try:
 except ImportError:
     HAS_EDITOR = False
 
-# Use modern rerun command for reliability
 def force_refresh():
     if hasattr(st, "rerun"):
         st.rerun()
     else:
         st.experimental_rerun()
 
+def remove_comments(json_str):
+    pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
+    def replace(match):
+        if match.group(1): return match.group(1) 
+        return ""
+    try:
+        return re.sub(pattern, replace, json_str)
+    except:
+        return json_str
+
 def clean_flow_logic(flow_data):
+    if not isinstance(flow_data, dict): return flow_data
     clean = flow_data.copy()
     forbidden_keys = ["zis_template_version", "resources", "name", "description", "type", "properties"]
     for key in forbidden_keys:
@@ -45,24 +55,15 @@ st.set_page_config(
     initial_sidebar_state="collapsed" 
 )
 
-# [CSS OVERRIDES]
 st.markdown("""
 <style>
-    /* 1. HIDE SIDEBAR COMPLETELY */
     [data-testid="stSidebar"] { display: none; }
-    
-    /* 2. HIDE SIDEBAR TOGGLE BUTTON */
     [data-testid="collapsedControl"] { display: none; }
-
-    /* 3. Hide standard header */
     header {visibility: hidden;}
-    
-    /* 4. Adjust top padding */
     .block-container { padding-top: 1rem; padding-bottom: 2rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize Session State
 if "flow_json" not in st.session_state:
     st.session_state["flow_json"] = {"StartAt": "StartStep", "States": {"StartStep": {"Type": "Pass", "End": True}}}
 if "editor_key" not in st.session_state: st.session_state["editor_key"] = 0 
@@ -106,12 +107,9 @@ class ZISFlowEngine:
         return text
 
     def run_action(self, state_name, state_def):
-        # Case-insensitive ActionName lookup
         action_name = state_def.get("ActionName") or state_def.get("actionName", "Unknown")
         params = {}
-        # Case-insensitive Parameters lookup
         raw_params = state_def.get("Parameters") or state_def.get("parameters", {})
-        
         for k, v in raw_params.items():
             key = k[:-2] if k.endswith(".$") else k
             val = self.resolve_path(v, self.context) if k.endswith(".$") else self.interpolate(v)
@@ -124,10 +122,9 @@ class ZISFlowEngine:
         if url:
             try:
                 resp = requests.request(method, url, json=params.get("body"))
-                if resp.status_code >= 400:
-                     self.log(state_name, f"API {resp.status_code}: {resp.text[:50]}...", "ERROR")
-                else:
-                     self.log(state_name, f"API {resp.status_code}", "SUCCESS")
+                code = resp.status_code
+                if code >= 400: self.log(state_name, f"API {code}: {resp.text[:50]}...", "ERROR")
+                else: self.log(state_name, f"API {code}", "SUCCESS")
                 return resp.json() if resp.content else {}
             except Exception as e:
                 self.log(state_name, f"Error: {e}", "ERROR")
@@ -138,10 +135,7 @@ class ZISFlowEngine:
 
     def run(self):
         flow_def = self.flow.get("definition", self.flow)
-        
-        # [FIX] Case-insensitive StartAt
         curr = flow_def.get("StartAt") or flow_def.get("startAt")
-        # [FIX] Case-insensitive States
         states = flow_def.get("States") or flow_def.get("states", {})
         
         self.log("START", f"Flow: {self.context.get('flow_name', 'Local')}")
@@ -152,8 +146,8 @@ class ZISFlowEngine:
             state = states.get(curr)
             if not state: break
             
-            # [FIX] Case-insensitive Type
-            sType = state.get("Type") or state.get("type")
+            # Smart normalization for type
+            sType = (state.get("Type") or state.get("type", "Pass")).title()
             
             if sType == "Action":
                 res = self.run_action(curr, state)
@@ -167,7 +161,6 @@ class ZISFlowEngine:
                 for rule in choices:
                     var_path = rule.get("Variable") or rule.get("variable")
                     val = self.resolve_path(var_path, self.context)
-                    # Simplified match logic
                     match_val = rule.get("StringEquals") or rule.get("stringEquals") or rule.get("Contains") or rule.get("contains")
                     if str(match_val) in str(val): 
                         curr = rule.get("Next") or rule.get("next"); break
@@ -202,7 +195,6 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [VISUALIZER] Updated for Case-Insensitive Graphing
 def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
@@ -213,13 +205,11 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
         
         visited = set(highlight_path) if highlight_path else set()
         
-        # [FIX] Case-insensitive Start
         start = flow_def.get("StartAt") or flow_def.get("startAt")
         
         dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled")
         if start: dot.edge("START", start)
 
-        # [FIX] Case-insensitive States
         states = flow_def.get("States") or flow_def.get("states", {})
 
         for k, v in states.items():
@@ -234,7 +224,8 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
                 fill = "#FFF59D" # Highlight
                 pen = "3"
 
-            sType = v.get("Type") or v.get("type", "Unknown")
+            # Normalize Type display
+            sType = (v.get("Type") or v.get("type", "Unknown")).title()
             dot.node(k, f"{k}\n({sType})", fillcolor=fill, penwidth=pen)
             
             nxt = v.get("Next") or v.get("next")
@@ -361,9 +352,18 @@ with t_code:
         if resp and resp.get("type") == "submit":
             try:
                 latest_text = resp.get("text", "")
-                js = json.loads(latest_text)
+                clean_text = remove_comments(latest_text)
+                js = json.loads(clean_text)
                 
-                clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
+                # Bundle Detect
+                if "resources" in js:
+                    for res_k, res_v in js["resources"].items():
+                        if res_v.get("type") == "ZIS::Flow":
+                            js = res_v["properties"]["definition"]
+                            st.toast(f"📦 Extracted Flow: {res_k}", icon="✂️")
+                            break
+
+                clean_js = clean_flow_logic(js.get("definition", js))
                 formatted_json = json.dumps(clean_js, indent=2, sort_keys=False)
                 
                 if formatted_json != st.session_state.get("editor_content"):
@@ -381,8 +381,14 @@ with t_code:
         txt = st.text_area("JSON", st.session_state.get("editor_content", ""), height=500, key=dynamic_key)
         if st.button("Save", key="save_text"):
             try:
-                js = json.loads(txt)
-                clean_js = clean_flow_logic(js["definition"] if "definition" in js else js)
+                clean_text = remove_comments(txt)
+                js = json.loads(clean_text)
+                if "resources" in js:
+                    for res_k, res_v in js["resources"].items():
+                        if res_v.get("type") == "ZIS::Flow":
+                            js = res_v["properties"]["definition"]
+                            break
+                clean_js = clean_flow_logic(js.get("definition", js))
                 formatted = json.dumps(clean_js, indent=2)
                 st.session_state["flow_json"] = clean_js
                 st.session_state["editor_content"] = formatted
@@ -394,7 +400,6 @@ with t_code:
 with t_vis:
     c1, c2 = st.columns([1, 2])
     curr = st.session_state["flow_json"]
-    # [FIX] Case-insensitive lookup for States
     states = curr.get("States") or curr.get("states", {})
     keys = list(states.keys())
     
@@ -422,7 +427,6 @@ with t_vis:
                     target_key = "States" if "States" in st.session_state["flow_json"] else "states"
                     if target_key not in st.session_state["flow_json"]: st.session_state["flow_json"][target_key] = {}
                     st.session_state["flow_json"][target_key][new_step_name] = new_def
-                    
                     st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
                     st.success(f"Created {new_step_name}")
                     force_refresh()
@@ -431,7 +435,8 @@ with t_vis:
         st.divider()
         if selected_step and selected_step != "(Select a Step)" and selected_step in states:
             step_data = states[selected_step]
-            step_type = step_data.get("Type") or step_data.get("type")
+            # [FIX] Force Type Normalization (title case) so logic matches "Choice" correctly
+            step_type = (step_data.get("Type") or step_data.get("type", "")).title()
             st.markdown(f"### ⚙️ {selected_step} `[{step_type}]`")
             
             key_suffix = f"_{selected_step}"
@@ -447,7 +452,7 @@ with t_vis:
                         idx = next_options.index(current_next) if current_next in next_options else 0
                         new_next = st.selectbox("Go to Next", next_options, index=idx, key=f"sel_next_step{key_suffix}_{len(next_options)}")
                         step_data["Next"] = new_next
-                        if "next" in step_data and step_data["next"] != new_next: del step_data["next"]
+                        if "next" in step_data: del step_data["next"]
                     else: st.warning("Create another step to link to.")
 
             if step_type == "Action":
@@ -468,7 +473,6 @@ with t_vis:
                 step_data["Seconds"] = st.number_input("Wait (Sec)", min_value=1, value=int(current_sec), key=f"inp_wait_sec{key_suffix}")
             
             elif step_type == "Choice":
-                # [FIX] Case-insensitive Default
                 current_def = step_data.get("Default") or step_data.get("default", "")
                 opts = [o for o in keys if o != selected_step]
                 def_idx = opts.index(current_def) if current_def in opts else 0
@@ -477,7 +481,6 @@ with t_vis:
                     step_data["Default"] = new_def
                     if "default" in step_data: del step_data["default"]
 
-                # [FIX] Case-insensitive Choices list
                 choices = step_data.get("Choices") or step_data.get("choices", [])
                 for i, choice in enumerate(choices):
                     with st.expander(f"Rule #{i+1}", expanded=False):
@@ -496,8 +499,10 @@ with t_vis:
                             
                 if st.button("➕ Add Rule", key=f"btn_add_rule{key_suffix}"):
                     if opts: 
+                        # Ensure standard key exists
                         if "Choices" not in step_data: step_data["Choices"] = []
                         if "choices" in step_data: step_data["Choices"] = step_data.pop("choices")
+                        
                         step_data["Choices"].append({"Variable": "$.input", "StringEquals": "", "Next": opts[0]})
                         force_refresh()
 
