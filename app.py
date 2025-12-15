@@ -123,7 +123,6 @@ for key in ["zd_subdomain", "zd_email", "zd_token"]:
 # ==========================================
 # 2. LOGIC ENGINE (Internal Version)
 # ==========================================
-# Ideally import from zis_engine, but keeping self-contained for app portability
 class ZISFlowEngine:
     def __init__(self, flow_definition, input_data, connections, configs):
         self.flow = flow_definition
@@ -215,7 +214,6 @@ class ZISFlowEngine:
                 for rule in state.get("Choices", []):
                     val = self.resolve_path(rule.get("Variable"), self.context)
                     
-                    # Basic Logic check
                     if "StringEquals" in rule and str(rule["StringEquals"]) == str(val):
                         curr = rule["Next"]; matched = True; break
                     if "BooleanEquals" in rule and bool(rule["BooleanEquals"]) == bool(val):
@@ -223,7 +221,6 @@ class ZISFlowEngine:
                 
             elif sType == "Pass":
                 if "Result" in state: 
-                    # If ResultPath exists, map result there
                     target_path = state.get("ResultPath")
                     if target_path:
                         self.set_nested_value(target_path, state["Result"])
@@ -368,7 +365,6 @@ with t_imp:
                             found = False
                             for k, v in r.json().get("resources", {}).items():
                                 if "Flow" in v.get("type", ""):
-                                    # [FIX] Normalize immediately upon load
                                     raw_def = clean_flow_logic(v["properties"]["definition"])
                                     norm_def = normalize_zis_keys(raw_def)
                                     st.session_state["flow_json"] = norm_def
@@ -399,12 +395,9 @@ with t_code:
         if resp and resp.get("type") == "submit":
             try:
                 latest_text = resp.get("text", "")
-                
-                # 1. Internal clean for parsing
                 clean_text = remove_comments(latest_text)
                 js = json.loads(clean_text)
                 
-                # 2. Smart Bundle Detect
                 if "resources" in js:
                     for res_k, res_v in js["resources"].items():
                         if res_v.get("type") == "ZIS::Flow":
@@ -412,7 +405,6 @@ with t_code:
                             st.toast(f"📦 Extracted Flow: {res_k}", icon="✂️")
                             break
 
-                # 3. Clean structure & [FIX] NORMALIZE KEYS TO PASCALCASE
                 clean_js = clean_flow_logic(js.get("definition", js))
                 norm_js = normalize_zis_keys(clean_js)
                 
@@ -424,8 +416,6 @@ with t_code:
                 
                 st.session_state["flow_json"] = norm_js
                 st.toast("Code Validated, Normalized & Saved!", icon="✅")
-                
-                # Refresh if keys changed (e.g., startAt -> StartAt)
                 if norm_js != st.session_state.get("flow_json"):
                     force_refresh()
                     
@@ -454,7 +444,6 @@ with t_code:
 # --- TAB 4: DESIGNER ---
 with t_vis:
     c1, c2 = st.columns([1, 2])
-    # Logic is now safe because keys are normalized to PascalCase
     curr = st.session_state["flow_json"]
     states = curr.get("States", {})
     keys = list(states.keys())
@@ -500,10 +489,22 @@ with t_vis:
                 else:
                     step_data.pop("End", None)
                     current_next = step_data.get("Next", "")
+                    # [FIXED] Prevent auto-snapping to the first option
                     next_options = [opt for opt in keys if opt != selected_step]
-                    if next_options:
-                        idx = next_options.index(current_next) if current_next in next_options else 0
-                        step_data["Next"] = st.selectbox("Go to Next", next_options, index=idx, key=f"sel_next_step{key_suffix}_{len(next_options)}")
+                    
+                    # Logic to handle undefined/empty Next
+                    if current_next not in next_options:
+                        final_options = ["(Select a Step)"] + next_options
+                        idx = 0
+                    else:
+                        final_options = next_options
+                        idx = next_options.index(current_next)
+
+                    if final_options:
+                        selected_val = st.selectbox("Go to Next", final_options, index=idx, key=f"sel_next_step{key_suffix}_{len(final_options)}")
+                        # Only update JSON if valid selection is made
+                        if selected_val != "(Select a Step)":
+                            step_data["Next"] = selected_val
                     else: st.warning("Create another step to link to.")
 
             if step_type == "Action":
@@ -517,8 +518,19 @@ with t_vis:
             elif step_type == "Choice":
                 current_def = step_data.get("Default", "")
                 opts = [o for o in keys if o != selected_step]
-                def_idx = opts.index(current_def) if current_def in opts else 0
-                if opts: step_data["Default"] = st.selectbox("Else (Default Path)", opts, index=def_idx, key=f"sel_choice_def{key_suffix}_{len(opts)}")
+                
+                # [FIXED] Default Path Logic
+                if current_def not in opts:
+                    def_options = ["(Select a Step)"] + opts
+                    d_idx = 0
+                else:
+                    def_options = opts
+                    d_idx = opts.index(current_def)
+                
+                if opts: 
+                    sel_def = st.selectbox("Else (Default Path)", def_options, index=d_idx, key=f"sel_choice_def{key_suffix}_{len(opts)}")
+                    if sel_def != "(Select a Step)":
+                         step_data["Default"] = sel_def
                 
                 choices = step_data.get("Choices", [])
                 for i, choice in enumerate(choices):
@@ -527,8 +539,18 @@ with t_vis:
                         choice["StringEquals"] = st.text_input("Equals (String)", value=str(choice.get("StringEquals", "")), key=f"c_val_{i}{key_suffix}")
                         
                         curr_nxt = choice.get("Next", "")
-                        n_idx = opts.index(curr_nxt) if curr_nxt in opts else 0
-                        choice["Next"] = st.selectbox("Go To", opts, index=n_idx, key=f"c_next_{i}{key_suffix}")
+                        
+                        # [FIXED] Choice Next Logic
+                        if curr_nxt not in opts:
+                            c_options = ["(Select a Step)"] + opts
+                            c_idx = 0
+                        else:
+                            c_options = opts
+                            c_idx = opts.index(curr_nxt)
+                        
+                        sel_choice_next = st.selectbox("Go To", c_options, index=c_idx, key=f"c_next_{i}{key_suffix}")
+                        if sel_choice_next != "(Select a Step)":
+                            choice["Next"] = sel_choice_next
                         
                         if st.button("🗑️", key=f"del_rule_{i}{key_suffix}"): choices.pop(i); force_refresh()
 
@@ -572,11 +594,9 @@ with t_dep:
                         status.write(f"Checking integration: {target_int}...")
                         requests.post(f"{get_base_url()}/integrations", auth=get_auth(), json={"name": target_int, "display_name": target_int}, headers={"Content-Type": "application/json"})
                         
-                        # [FIX] Safer Bundle Name Sanatization
                         safe_bun = bun_name.lower().strip().replace("-", "_").replace(" ", "")
                         res_name = f"{safe_bun}_flow"
                         
-                        # [FIX] Normalize BEFORE deploying to ensure valid ZIS API payload
                         clean_def = clean_flow_logic(st.session_state["flow_json"])
                         norm_def = normalize_zis_keys(clean_def)
                         
@@ -595,7 +615,6 @@ with t_deb:
         st.markdown("### Input")
         inp = st.text_area("JSON Input", '{"ticket": {"id": 123}}', height=200, key="debug_input")
         if st.button("▶️ Run Simulation", type="primary", key="btn_run_debug"):
-            # Ensure logic engine runs on normalized code
             eng = ZISFlowEngine(normalize_zis_keys(st.session_state["flow_json"]), json.loads(inp), {}, {})
             logs, ctx, path = eng.run()
             st.session_state["debug_res"] = (logs, ctx, path)
