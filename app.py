@@ -38,6 +38,19 @@ def remove_comments(json_str):
     except:
         return json_str
 
+# [FIXED] Robust Key Reader (Case Insensitive)
+# This prevents the UI from thinking data is missing if keys are lowercase
+def get_zis_key(data, key, default=None):
+    if not isinstance(data, dict): return default
+    # Try exact match first (PascalCase)
+    if key in data: return data[key]
+    # Try lowercase match (camelCase)
+    lower_key = key.lower()
+    for k, v in data.items():
+        if k.lower() == lower_key:
+            return v
+    return default
+
 # [FIXED] Normalize Keys to PascalCase (Comprehensive ZIS Support)
 def normalize_zis_keys(obj):
     if isinstance(obj, dict):
@@ -166,9 +179,13 @@ class ZISFlowEngine:
         return text
 
     def run_action(self, state_name, state_def):
-        action_name = state_def.get("ActionName", "Unknown")
+        # [FIX] Use get_zis_key for safe reading
+        action_name = get_zis_key(state_def, "ActionName", "Unknown")
         params = {}
-        for k, v in state_def.get("Parameters", {}).items():
+        # [FIX] Read parameters safely
+        raw_params = get_zis_key(state_def, "Parameters", {})
+        
+        for k, v in raw_params.items():
             key = k[:-2] if k.endswith(".$") else k
             val = self.resolve_path(v, self.context) if k.endswith(".$") else self.interpolate(v)
             params[key] = val
@@ -193,8 +210,11 @@ class ZISFlowEngine:
 
     def run(self):
         flow_def = self.flow.get("definition", self.flow)
-        curr = flow_def.get("StartAt")
-        states = flow_def.get("States", {})
+        
+        # [FIX] Robust reading of StartAt and States
+        curr = get_zis_key(flow_def, "StartAt")
+        states = get_zis_key(flow_def, "States", {})
+        
         self.log("START", f"Flow: {self.context.get('flow_name', 'Local')}")
         steps = 0
         while curr and steps < 50:
@@ -203,33 +223,47 @@ class ZISFlowEngine:
             state = states.get(curr)
             if not state: break
             
-            sType = state.get("Type")
+            # [FIX] Robust reading of Type
+            sType = get_zis_key(state, "Type")
+            
+            # [FIX] Robust reading of Next and ResultPath
+            next_step = get_zis_key(state, "Next")
+            result_path = get_zis_key(state, "ResultPath")
+            
             if sType == "Action":
                 res = self.run_action(curr, state)
-                if "ResultPath" in state: self.set_nested_value(state["ResultPath"], res)
-                curr = state.get("Next")
+                if result_path: self.set_nested_value(result_path, res)
+                curr = next_step
             elif sType == "Choice":
-                curr = state.get("Default")
+                curr = get_zis_key(state, "Default")
                 matched = False
-                for rule in state.get("Choices", []):
-                    val = self.resolve_path(rule.get("Variable"), self.context)
+                choices = get_zis_key(state, "Choices", [])
+                for rule in choices:
+                    var_path = get_zis_key(rule, "Variable")
+                    val = self.resolve_path(var_path, self.context)
                     
-                    if "StringEquals" in rule and str(rule["StringEquals"]) == str(val):
-                        curr = rule["Next"]; matched = True; break
-                    if "BooleanEquals" in rule and bool(rule["BooleanEquals"]) == bool(val):
-                        curr = rule["Next"]; matched = True; break
+                    str_eq = get_zis_key(rule, "StringEquals")
+                    bool_eq = get_zis_key(rule, "BooleanEquals")
+                    rule_next = get_zis_key(rule, "Next")
+                    
+                    if str_eq is not None and str(str_eq) == str(val):
+                        curr = rule_next; matched = True; break
+                    if bool_eq is not None and bool(bool_eq) == bool(val):
+                        curr = rule_next; matched = True; break
                 
             elif sType == "Pass":
-                if "Result" in state: 
-                    target_path = state.get("ResultPath")
-                    if target_path:
-                        self.set_nested_value(target_path, state["Result"])
-                curr = state.get("Next")
+                res_val = get_zis_key(state, "Result")
+                if res_val is not None and result_path:
+                    self.set_nested_value(result_path, res_val)
+                curr = next_step
             elif sType == "Wait":
-                time.sleep(float(state.get("Seconds", 1)))
-                curr = state.get("Next")
+                sec = get_zis_key(state, "Seconds", 1)
+                time.sleep(float(sec))
+                curr = next_step
             elif sType in ["Succeed", "Fail"]: break
-            if state.get("End"): break
+            
+            if get_zis_key(state, "End"): break
+            
         return self.logs, self.context, self.visited_states
 
 # ==========================================
@@ -257,13 +291,13 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
         
         visited = set(highlight_path) if highlight_path else set()
         
-        # Safe Get with Normalization
-        start = flow_def.get("StartAt")
+        # [FIX] Robust reading
+        start = get_zis_key(flow_def, "StartAt")
         
         dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled")
         if start: dot.edge("START", start)
 
-        states = flow_def.get("States", {})
+        states = get_zis_key(flow_def, "States", {})
         for k, v in states.items():
             fill = "#e0e0e0" 
             pen = "1"
@@ -276,13 +310,21 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
                 fill = "#FFF59D" 
                 pen = "3"
 
-            sType = v.get("Type", "Unknown")
+            sType = get_zis_key(v, "Type", "Unknown")
             dot.node(k, f"{k}\n({sType})", fillcolor=fill, penwidth=pen)
             
-            if "Next" in v: dot.edge(k, v["Next"])
-            if "Default" in v: dot.edge(k, v["Default"], label="Default")
-            for c in v.get("Choices", []): dot.edge(k, c.get("Next"), label="If Match")
-            if v.get("End"): 
+            next_step = get_zis_key(v, "Next")
+            if next_step: dot.edge(k, next_step)
+            
+            default_step = get_zis_key(v, "Default")
+            if default_step: dot.edge(k, default_step, label="Default")
+            
+            choices = get_zis_key(v, "Choices", [])
+            for c in choices:
+                c_next = get_zis_key(c, "Next")
+                if c_next: dot.edge(k, c_next, label="If Match")
+            
+            if get_zis_key(v, "End"): 
                 dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
                 dot.edge(k, "END")
         st.graphviz_chart(dot) 
@@ -444,8 +486,9 @@ with t_code:
 # --- TAB 4: DESIGNER ---
 with t_vis:
     c1, c2 = st.columns([1, 2])
+    # [FIX] Robust key reading for the main flow object
     curr = st.session_state["flow_json"]
-    states = curr.get("States", {})
+    states = get_zis_key(curr, "States", {})
     keys = list(states.keys())
     
     with c1:
@@ -478,21 +521,30 @@ with t_vis:
         st.divider()
         if selected_step and selected_step != "(Select a Step)" and selected_step in states:
             step_data = states[selected_step]
-            step_type = step_data.get("Type")
+            # [FIX] Case Insensitive Read
+            step_type = get_zis_key(step_data, "Type")
             st.markdown(f"### ⚙️ {selected_step} `[{step_type}]`")
             
             key_suffix = f"_{selected_step}"
             is_terminal = step_type in ["Succeed", "Fail", "Choice"] 
+            
             if not is_terminal:
-                is_end = st.checkbox("End Flow?", value=step_data.get("End", False), key=f"chk_is_end{key_suffix}")
-                if is_end: step_data["End"] = True; step_data.pop("Next", None)
+                is_end_val = get_zis_key(step_data, "End", False)
+                is_end = st.checkbox("End Flow?", value=is_end_val, key=f"chk_is_end{key_suffix}")
+                
+                if is_end: 
+                    step_data["End"] = True
+                    # Remove Next/next if present
+                    if "Next" in step_data: del step_data["Next"]
+                    if "next" in step_data: del step_data["next"]
                 else:
-                    step_data.pop("End", None)
-                    current_next = step_data.get("Next", "")
-                    # [FIXED] Prevent auto-snapping to the first option
+                    if "End" in step_data: del step_data["End"]
+                    if "end" in step_data: del step_data["end"]
+                    
+                    # [FIX] Read current next carefully
+                    current_next = get_zis_key(step_data, "Next", "")
                     next_options = [opt for opt in keys if opt != selected_step]
                     
-                    # Logic to handle undefined/empty Next
                     if current_next not in next_options:
                         final_options = ["(Select a Step)"] + next_options
                         idx = 0
@@ -502,24 +554,30 @@ with t_vis:
 
                     if final_options:
                         selected_val = st.selectbox("Go to Next", final_options, index=idx, key=f"sel_next_step{key_suffix}_{len(final_options)}")
-                        # Only update JSON if valid selection is made
                         if selected_val != "(Select a Step)":
                             step_data["Next"] = selected_val
                     else: st.warning("Create another step to link to.")
 
             if step_type == "Action":
-                step_data["ActionName"] = st.text_input("Action Name", value=step_data.get("ActionName", ""), key=f"inp_act_name{key_suffix}")
-                current_params = json.dumps(step_data.get("Parameters", {}), indent=2)
-                new_params = st.text_area("Parameters JSON", value=current_params, height=150, key=f"inp_act_params{key_suffix}")
+                curr_act = get_zis_key(step_data, "ActionName", "")
+                step_data["ActionName"] = st.text_input("Action Name", value=curr_act, key=f"inp_act_name{key_suffix}")
+                
+                # [FIX] Read parameters carefully
+                curr_params = get_zis_key(step_data, "Parameters", {})
+                current_params_str = json.dumps(curr_params, indent=2)
+                
+                new_params = st.text_area("Parameters JSON", value=current_params_str, height=150, key=f"inp_act_params{key_suffix}")
                 try: step_data["Parameters"] = json.loads(new_params)
                 except: st.error("Invalid JSON")
+                
             elif step_type == "Wait":
-                step_data["Seconds"] = st.number_input("Wait (Sec)", min_value=1, value=int(step_data.get("Seconds", 5)), key=f"inp_wait_sec{key_suffix}")
+                curr_sec = get_zis_key(step_data, "Seconds", 5)
+                step_data["Seconds"] = st.number_input("Wait (Sec)", min_value=1, value=int(curr_sec), key=f"inp_wait_sec{key_suffix}")
+            
             elif step_type == "Choice":
-                current_def = step_data.get("Default", "")
+                current_def = get_zis_key(step_data, "Default", "")
                 opts = [o for o in keys if o != selected_step]
                 
-                # [FIXED] Default Path Logic
                 if current_def not in opts:
                     def_options = ["(Select a Step)"] + opts
                     d_idx = 0
@@ -532,15 +590,22 @@ with t_vis:
                     if sel_def != "(Select a Step)":
                          step_data["Default"] = sel_def
                 
-                choices = step_data.get("Choices", [])
+                choices = get_zis_key(step_data, "Choices", [])
+                # If reading choices failed due to casing, ensure we initialize it
+                if "Choices" not in step_data and "choices" in step_data:
+                    step_data["Choices"] = step_data.pop("choices")
+                    choices = step_data["Choices"]
+                
                 for i, choice in enumerate(choices):
                     with st.expander(f"Rule #{i+1}", expanded=False):
-                        choice["Variable"] = st.text_input("Variable", value=choice.get("Variable", "$.input..."), key=f"c_var_{i}{key_suffix}")
-                        choice["StringEquals"] = st.text_input("Equals (String)", value=str(choice.get("StringEquals", "")), key=f"c_val_{i}{key_suffix}")
+                        # [FIX] Safe reads inside choice
+                        curr_var = get_zis_key(choice, "Variable", "$.input...")
+                        curr_val = get_zis_key(choice, "StringEquals", "")
+                        curr_nxt = get_zis_key(choice, "Next", "")
+
+                        choice["Variable"] = st.text_input("Variable", value=curr_var, key=f"c_var_{i}{key_suffix}")
+                        choice["StringEquals"] = st.text_input("Equals (String)", value=str(curr_val), key=f"c_val_{i}{key_suffix}")
                         
-                        curr_nxt = choice.get("Next", "")
-                        
-                        # [FIXED] Choice Next Logic
                         if curr_nxt not in opts:
                             c_options = ["(Select a Step)"] + opts
                             c_idx = 0
