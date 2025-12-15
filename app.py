@@ -82,7 +82,7 @@ def normalize_zis_keys(obj):
             "retry": "Retry", "errorequals": "ErrorEquals",
             "variable": "Variable", "stringequals": "StringEquals", 
             "booleanequals": "BooleanEquals", "numericequals": "NumericEquals",
-            "ispresent": "IsPresent", "isnull": "IsNull"
+            "ispresent": "IsPresent", "isnull": "IsNull", "seconds": "Seconds"
         }
         for k, v in obj.items():
             lower_k = k.lower()
@@ -128,6 +128,37 @@ def sanitize_step(step_data):
                     step_data[target] = val
                 # Delete the old lowercase key to prevent duplicate truth
                 del step_data[k]
+
+# [CRITICAL] Sync Function: Ensures flow_json matches editor_content
+def try_sync_from_editor(force_ui_update=False):
+    """
+    Attempts to parse the current editor string content into the flow_json object.
+    Returns (True, parsed_json) if successful, (False, None) if invalid JSON.
+    """
+    content = st.session_state.get("editor_content", "")
+    if not content:
+        return False, None
+    
+    try:
+        js = json.loads(remove_comments(content))
+        
+        # Handle ZIS Bundle wrapper structure if present
+        if "resources" in js:
+            for v in js["resources"].values():
+                if v.get("type") == "ZIS::Flow": 
+                    js = v["properties"]["definition"]
+                    break
+        
+        norm_js = normalize_zis_keys(clean_flow_logic(js))
+        st.session_state["flow_json"] = norm_js
+        
+        if force_ui_update:
+            st.session_state["editor_content"] = json.dumps(norm_js, indent=2)
+            st.session_state["editor_key"] += 1
+            
+        return True, norm_js
+    except Exception as e:
+        return False, None
 
 # ==========================================
 # 1. THEME & CONFIG
@@ -427,156 +458,170 @@ with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
         resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, key=dynamic_key)
-        if resp and resp.get("text"): st.session_state["editor_content"] = resp["text"]
-        if resp and resp.get("type") == "submit":
-            try:
-                js = json.loads(remove_comments(resp.get("text", "")))
-                if "resources" in js:
-                    for v in js["resources"].values():
-                        if v.get("type") == "ZIS::Flow": js = v["properties"]["definition"]; break
-                norm_js = normalize_zis_keys(clean_flow_logic(js))
-                st.session_state["flow_json"] = norm_js
-                st.session_state["editor_content"] = json.dumps(norm_js, indent=2)
-                st.session_state["editor_key"] += 1
-                st.toast("Saved!", icon="✅"); force_refresh()
-            except: st.error("Invalid JSON")
+        
+        # [FIX] Enhanced Sync Logic
+        # We capture the text whenever it changes, not just on submit.
+        if resp and resp.get("text"):
+            # 1. Update the raw string content immediately
+            st.session_state["editor_content"] = resp["text"]
+            
+            # 2. Attempt to parse JSON immediately to keep flow_json in sync
+            # This handles the "Paste and Switch Tab" scenario
+            is_valid, _ = try_sync_from_editor(force_ui_update=False)
+
+            # 3. If explicit submit, force refresh UI elements
+            if resp.get("type") == "submit":
+                if is_valid:
+                    try_sync_from_editor(force_ui_update=True)
+                    st.toast("Saved!", icon="✅")
+                    force_refresh()
+                else:
+                    st.error("Invalid JSON")
 
 # --- TAB 4: VISUAL DESIGNER ---
 with t_vis:
-    c1, c2 = st.columns([1, 2])
-    curr = st.session_state["flow_json"]
-    states = get_zis_key(curr, "States", {})
-    keys = list(states.keys())
+    # [FIX] Critical Guard: Ensure flow_json is fresh from editor before rendering
+    # If the user pasted code but didn't click "Save", we trust the editor content IF it is valid.
+    sync_ok, _ = try_sync_from_editor(force_ui_update=False)
     
-    with c1:
-        st.subheader("🛠️ Configure Step")
-        if not keys:
-            st.info("Start by adding a step below.")
-            selected_step = None
-        else:
-            selected_step = st.selectbox("Select Step to Edit", ["(Select a Step)"] + keys, key="sel_step_edit")
+    if not sync_ok:
+        st.error("⚠️ **Syntax Error:** The code in the 'Code Editor' tab is invalid JSON. Please fix it before using the Visual Designer to avoid losing your changes.")
+    else:
+        # Proceed only if JSON is valid
+        c1, c2 = st.columns([1, 2])
+        curr = st.session_state["flow_json"]
+        states = get_zis_key(curr, "States", {})
+        keys = list(states.keys())
         
-        with st.expander("➕ Add New Step"):
-            new_step_name = st.text_input("New Step Name", key="inp_new_name")
-            new_step_type = st.selectbox("Type", ["Action", "Choice", "Wait", "Pass", "Succeed", "Fail"], key="sel_new_type")
-            if st.button("Create Step"):
-                if new_step_name and new_step_name not in states:
-                    new_def = {"Type": new_step_type}
-                    if new_step_type == "Pass": new_def["End"] = True
-                    st.session_state["flow_json"]["States"][new_step_name] = new_def
-                    st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-                    force_refresh()
-
-        st.divider()
-        if selected_step and selected_step != "(Select a Step)" and selected_step in states:
-            step_data = states[selected_step]
+        with c1:
+            st.subheader("🛠️ Configure Step")
+            if not keys:
+                st.info("Start by adding a step below.")
+                selected_step = None
+            else:
+                selected_step = st.selectbox("Select Step to Edit", ["(Select a Step)"] + keys, key="sel_step_edit")
             
-            # [CRITICAL] Sanitize: Fix casing conflicts immediately
-            sanitize_step(step_data)
-            
-            step_type = get_zis_key(step_data, "Type")
-            st.markdown(f"### ⚙️ {selected_step} `[{step_type}]`")
-            
-            key_suffix = f"_{selected_step}"
-            is_terminal = step_type in ["Succeed", "Fail", "Choice"] 
-            
-            if not is_terminal:
-                is_end_val = get_zis_key(step_data, "End", False)
-                is_end = st.checkbox("End Flow?", value=is_end_val, key=f"chk_is_end{key_suffix}")
-                
-                if is_end: 
-                    step_data["End"] = True
-                    if "Next" in step_data: del step_data["Next"]
-                else:
-                    if "End" in step_data: del step_data["End"]
-                    
-                    # [SAFE READ]
-                    current_next = get_zis_key(step_data, "Next", "")
-                    next_options = [opt for opt in keys if opt != selected_step]
-                    
-                    # [SMART MATCH] Find correct index even if casing differs
-                    idx = find_best_match_index(next_options, current_next)
-                    
-                    # [SAFE DISPLAY] Only default to 0 if match found, else show placeholder
-                    final_options = ["(Select a Step)"] + next_options if idx == -1 else next_options
-                    final_idx = 0 if idx == -1 else idx
-                    
-                    selected_val = st.selectbox("Go to Next", final_options, index=final_idx, key=f"sel_next_{selected_step}_{current_next}")
-                    
-                    # [SAFE WRITE] Only write if user explicitly changed valid value
-                    if selected_val != "(Select a Step)" and selected_val != current_next:
-                        step_data["Next"] = selected_val
+            with st.expander("➕ Add New Step"):
+                new_step_name = st.text_input("New Step Name", key="inp_new_name")
+                new_step_type = st.selectbox("Type", ["Action", "Choice", "Wait", "Pass", "Succeed", "Fail"], key="sel_new_type")
+                if st.button("Create Step"):
+                    if new_step_name and new_step_name not in states:
+                        new_def = {"Type": new_step_type}
+                        if new_step_type == "Pass": new_def["End"] = True
+                        st.session_state["flow_json"]["States"][new_step_name] = new_def
+                        st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+                        force_refresh()
 
-            if step_type == "Action":
-                curr_act = get_zis_key(step_data, "ActionName", "")
-                new_act = st.text_input("Action Name", value=curr_act, key=f"inp_act_name{key_suffix}")
-                if new_act != curr_act: step_data["ActionName"] = new_act
+            st.divider()
+            if selected_step and selected_step != "(Select a Step)" and selected_step in states:
+                step_data = states[selected_step]
                 
-                curr_params = get_zis_key(step_data, "Parameters", {})
-                current_params_str = json.dumps(curr_params, indent=2)
-                new_params_str = st.text_area("Parameters JSON", value=current_params_str, height=150, key=f"inp_act_params{key_suffix}")
+                # [CRITICAL] Sanitize: Fix casing conflicts immediately
+                sanitize_step(step_data)
                 
-                if new_params_str != current_params_str:
-                    try: step_data["Parameters"] = json.loads(new_params_str)
-                    except: st.error("Invalid JSON")
+                step_type = get_zis_key(step_data, "Type")
+                st.markdown(f"### ⚙️ {selected_step} `[{step_type}]`")
                 
-            elif step_type == "Choice":
-                current_def = get_zis_key(step_data, "Default", "")
-                opts = [o for o in keys if o != selected_step]
+                key_suffix = f"_{selected_step}"
+                is_terminal = step_type in ["Succeed", "Fail", "Choice"] 
                 
-                d_idx = find_best_match_index(opts, current_def)
-                def_opts = ["(Select a Step)"] + opts if d_idx == -1 else opts
-                def_final_idx = 0 if d_idx == -1 else d_idx
-                
-                sel_def = st.selectbox("Else (Default Path)", def_opts, index=def_final_idx, key=f"sel_choice_def{key_suffix}")
-                if sel_def != "(Select a Step)" and sel_def != current_def:
-                     step_data["Default"] = sel_def
-                
-                choices = get_zis_key(step_data, "Choices", [])
-                if "Choices" not in step_data and "choices" in step_data: step_data["Choices"] = step_data.pop("choices")
-                
-                for i, choice in enumerate(choices):
-                    with st.expander(f"Rule #{i+1}", expanded=False):
-                        v_val = get_zis_key(choice, "Variable", "$.input...")
-                        s_val = str(get_zis_key(choice, "StringEquals", ""))
-                        n_val = get_zis_key(choice, "Next", "")
+                if not is_terminal:
+                    is_end_val = get_zis_key(step_data, "End", False)
+                    is_end = st.checkbox("End Flow?", value=is_end_val, key=f"chk_is_end{key_suffix}")
+                    
+                    if is_end: 
+                        step_data["End"] = True
+                        if "Next" in step_data: del step_data["Next"]
+                    else:
+                        if "End" in step_data: del step_data["End"]
                         
-                        nv = st.text_input("Variable", value=v_val, key=f"c_var_{i}{key_suffix}")
-                        ns = st.text_input("Equals", value=s_val, key=f"c_val_{i}{key_suffix}")
+                        # [SAFE READ]
+                        current_next = get_zis_key(step_data, "Next", "")
+                        next_options = [opt for opt in keys if opt != selected_step]
                         
-                        if nv != v_val: choice["Variable"] = nv
-                        if ns != s_val: choice["StringEquals"] = ns
+                        # [SMART MATCH] Find correct index even if casing differs
+                        idx = find_best_match_index(next_options, current_next)
                         
-                        c_idx = find_best_match_index(opts, n_val)
-                        c_opts = ["(Select a Step)"] + opts if c_idx == -1 else opts
-                        c_final_idx = 0 if c_idx == -1 else c_idx
+                        # [SAFE DISPLAY] Only default to 0 if match found, else show placeholder
+                        final_options = ["(Select a Step)"] + next_options if idx == -1 else next_options
+                        final_idx = 0 if idx == -1 else idx
                         
-                        sel_choice_next = st.selectbox("Go To", c_opts, index=c_final_idx, key=f"c_next_{i}{key_suffix}")
-                        if sel_choice_next != "(Select a Step)" and sel_choice_next != n_val:
-                            choice["Next"] = sel_choice_next
+                        selected_val = st.selectbox("Go to Next", final_options, index=final_idx, key=f"sel_next_{selected_step}_{current_next}")
                         
-                        if st.button("🗑️", key=f"del_rule_{i}{key_suffix}"): choices.pop(i); force_refresh()
+                        # [SAFE WRITE] Only write if user explicitly changed valid value
+                        if selected_val != "(Select a Step)" and selected_val != current_next:
+                            step_data["Next"] = selected_val
 
-                if st.button("➕ Add Rule"):
-                    if "Choices" not in step_data: step_data["Choices"] = []
-                    step_data["Choices"].append({"Variable": "$.input", "StringEquals": "", "Next": opts[0] if opts else ""})
-                    force_refresh()
+                if step_type == "Action":
+                    curr_act = get_zis_key(step_data, "ActionName", "")
+                    new_act = st.text_input("Action Name", value=curr_act, key=f"inp_act_name{key_suffix}")
+                    if new_act != curr_act: step_data["ActionName"] = new_act
+                    
+                    curr_params = get_zis_key(step_data, "Parameters", {})
+                    current_params_str = json.dumps(curr_params, indent=2)
+                    new_params_str = st.text_area("Parameters JSON", value=current_params_str, height=150, key=f"inp_act_params{key_suffix}")
+                    
+                    if new_params_str != current_params_str:
+                        try: step_data["Parameters"] = json.loads(new_params_str)
+                        except: st.error("Invalid JSON")
+                    
+                elif step_type == "Choice":
+                    current_def = get_zis_key(step_data, "Default", "")
+                    opts = [o for o in keys if o != selected_step]
+                    
+                    d_idx = find_best_match_index(opts, current_def)
+                    def_opts = ["(Select a Step)"] + opts if d_idx == -1 else opts
+                    def_final_idx = 0 if d_idx == -1 else d_idx
+                    
+                    sel_def = st.selectbox("Else (Default Path)", def_opts, index=def_final_idx, key=f"sel_choice_def{key_suffix}")
+                    if sel_def != "(Select a Step)" and sel_def != current_def:
+                         step_data["Default"] = sel_def
+                    
+                    choices = get_zis_key(step_data, "Choices", [])
+                    if "Choices" not in step_data and "choices" in step_data: step_data["Choices"] = step_data.pop("choices")
+                    
+                    for i, choice in enumerate(choices):
+                        with st.expander(f"Rule #{i+1}", expanded=False):
+                            v_val = get_zis_key(choice, "Variable", "$.input...")
+                            s_val = str(get_zis_key(choice, "StringEquals", ""))
+                            n_val = get_zis_key(choice, "Next", "")
+                            
+                            nv = st.text_input("Variable", value=v_val, key=f"c_var_{i}{key_suffix}")
+                            ns = st.text_input("Equals", value=s_val, key=f"c_val_{i}{key_suffix}")
+                            
+                            if nv != v_val: choice["Variable"] = nv
+                            if ns != s_val: choice["StringEquals"] = ns
+                            
+                            c_idx = find_best_match_index(opts, n_val)
+                            c_opts = ["(Select a Step)"] + opts if c_idx == -1 else opts
+                            c_final_idx = 0 if c_idx == -1 else c_idx
+                            
+                            sel_choice_next = st.selectbox("Go To", c_opts, index=c_final_idx, key=f"c_next_{i}{key_suffix}")
+                            if sel_choice_next != "(Select a Step)" and sel_choice_next != n_val:
+                                choice["Next"] = sel_choice_next
+                            
+                            if st.button("🗑️", key=f"del_rule_{i}{key_suffix}"): choices.pop(i); force_refresh()
 
-            st.write("---")
-            c_del, c_save = st.columns(2)
-            with c_del:
-                if st.button("🗑️ Delete Step"):
-                    del st.session_state["flow_json"]["States"][selected_step]
-                    st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-                    force_refresh()
-            with c_save:
-                if st.button("💾 Apply Changes", type="primary"):
-                    st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-                    st.success("Saved!"); force_refresh()
+                    if st.button("➕ Add Rule"):
+                        if "Choices" not in step_data: step_data["Choices"] = []
+                        step_data["Choices"].append({"Variable": "$.input", "StringEquals": "", "Next": opts[0] if opts else ""})
+                        force_refresh()
 
-    with c2:
-        st.markdown("### Visual Flow")
-        render_flow_graph(curr, selected_step=selected_step if selected_step != "(Select a Step)" else None)
+                st.write("---")
+                c_del, c_save = st.columns(2)
+                with c_del:
+                    if st.button("🗑️ Delete Step"):
+                        del st.session_state["flow_json"]["States"][selected_step]
+                        st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+                        force_refresh()
+                with c_save:
+                    if st.button("💾 Apply Changes", type="primary"):
+                        st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+                        st.success("Saved!"); force_refresh()
+
+        with c2:
+            st.markdown("### Visual Flow")
+            render_flow_graph(curr, selected_step=selected_step if selected_step != "(Select a Step)" else None)
 
 # --- TAB 5 & 6 (Deploy & Debug) ---
 with t_dep:
