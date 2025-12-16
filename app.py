@@ -506,7 +506,11 @@ with t_vis:
                         nxt_opts = [k for k in keys if k != sel]
                         curr_nxt = get_zis_key(s_dat, "Next", "")
                         idx = find_best_match_index(nxt_opts, curr_nxt)
-                        final_idx = 0 if idx == -1 else idx
+                        
+                        # [FIX] Offset +1 because we prepend "(Select)" to the list
+                        # If idx is -1 (not found), we use 0 to select "(Select)"
+                        final_idx = (idx + 1) if idx != -1 else 0
+                        
                         new_nxt = st.selectbox("Next", ["(Select)"] + nxt_opts, index=final_idx, key=f"nxt_{sel}_{ui_key}")
                         if new_nxt != "(Select)": s_dat["Next"] = new_nxt
 
@@ -522,7 +526,12 @@ with t_vis:
                     s_dat["ResultPath"] = st.text_input("ResultPath (e.g. $.myVar)", get_zis_key(s_dat, "ResultPath", ""), key=f"res_{sel}_{ui_key}")
 
                 elif s_typ == "Choice":
-                    s_dat["Default"] = st.selectbox("Default", [k for k in keys if k != sel], index=find_best_match_index([k for k in keys if k != sel], get_zis_key(s_dat, "Default")), key=f"def_{sel}_{ui_key}")
+                    # [FIX] Safe index finding for Default choice
+                    idx_def = find_best_match_index([k for k in keys if k != sel], get_zis_key(s_dat, "Default"))
+                    final_idx_def = idx_def if idx_def != -1 else 0
+                    
+                    s_dat["Default"] = st.selectbox("Default", [k for k in keys if k != sel], index=final_idx_def, key=f"def_{sel}_{ui_key}")
+                    
                     chs = get_zis_key(s_dat, "Choices", [])
                     if not isinstance(chs, list): chs = []
                     s_dat["Choices"] = chs
@@ -541,7 +550,12 @@ with t_vis:
                                 try: real_val = float(new_val)
                                 except: pass
                             ch[new_op] = real_val
-                            ch["Next"] = st.selectbox("GoTo", [k for k in keys if k != sel], index=find_best_match_index([k for k in keys if k != sel], get_zis_key(ch, "Next")), key=f"cn_{i}_{sel}_{ui_key}")
+                            
+                            # [FIX] Safe index finding for Rules Next
+                            idx_rule_next = find_best_match_index([k for k in keys if k != sel], get_zis_key(ch, "Next"))
+                            final_idx_rule = idx_rule_next if idx_rule_next != -1 else 0
+                            
+                            ch["Next"] = st.selectbox("GoTo", [k for k in keys if k != sel], index=final_idx_rule, key=f"cn_{i}_{sel}_{ui_key}")
                             if st.button("Del", key=f"cd_{i}_{sel}_{ui_key}"): chs.pop(i); force_refresh()
                     if st.button("Add Rule", key=f"ar_{sel}_{ui_key}"): chs.append({"Variable": "$.", "StringEquals": "", "Next": ""}); force_refresh()
 
