@@ -112,7 +112,6 @@ def sanitize_step(step_data):
         "resultpath": "ResultPath", "seconds": "Seconds"
     }
     existing_keys = list(step_data.keys())
-    # [FIXED] Iterating only keys to prevent unpacking error
     for k in existing_keys:
         k_lower = k.lower()
         if k_lower in keys_to_fix:
@@ -210,40 +209,46 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     try:
         dot = graphviz.Digraph(comment='ZIS Flow')
         
-        # [FIX] Stability Upgrade:
-        # - Switched splines from 'ortho' (unstable) to 'polyline' (stable straight lines)
-        # - Increased separation (nodesep, ranksep) to reduce routing complexity
-        # - Explicitly set layout engine to 'dot'
+        # [FIX] STABILITY OVERHAUL
+        # 1. Use default splines (True/spline) instead of ortho/polyline which are unstable.
+        # 2. Separate NODE definition from EDGE definition completely.
         dot.attr(layout='dot')
-        dot.attr(rankdir='TB', splines='polyline', nodesep='0.6', ranksep='0.8')
-        
-        # Force uniform node geometry to prevent layout shifts on selection
+        dot.attr(rankdir='TB', splines='true', nodesep='0.5', ranksep='0.6')
         dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12', penwidth='1', margin='0.2')
         dot.attr('edge', color='#888888') 
         
         visited = set(highlight_path) if highlight_path else set()
-        start = get_zis_key(flow_def, "StartAt")
-        
-        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled")
-        if start: dot.edge("START", start)
-
         states = get_zis_key(flow_def, "States", {})
+        start_step = get_zis_key(flow_def, "StartAt")
+
+        # --- PHASE 1: DEFINE ALL NODES (Fixed Order) ---
         
-        # Sort items to ensure deterministic graph generation order
-        for k, v in sorted(states.items()):
+        # 1.1 Start Node
+        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled")
+        
+        # 1.2 End Node (Pre-defined for stability)
+        dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
+
+        # 1.3 State Nodes
+        sorted_items = sorted(states.items())
+        for k, v in sorted_items:
             fill = "#e0e0e0"
-            color = "black" 
+            color = "black"
             
-            if k in visited: 
-                fill = "#C8E6C9"
-            
+            if k in visited: fill = "#C8E6C9"
             if k == selected_step: 
                 fill = "#FFF59D"
-                color = "#FBC02D" 
+                color = "#FBC02D"
 
             sType = get_zis_key(v, "Type", "Unknown")
             dot.node(k, f"{k}\n({sType})", fillcolor=fill, color=color)
-            
+
+        # --- PHASE 2: DEFINE ALL EDGES (Fixed Order) ---
+        
+        if start_step: 
+            dot.edge("START", start_step)
+
+        for k, v in sorted_items:
             next_step = get_zis_key(v, "Next")
             if next_step: dot.edge(k, next_step)
             
@@ -256,10 +261,9 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
                 if c_next: dot.edge(k, c_next, label="If Match")
             
             if get_zis_key(v, "End"): 
-                dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
                 dot.edge(k, "END")
         
-        st.graphviz_chart(dot) 
+        st.graphviz_chart(dot, use_container_width=True) 
     except Exception as e: st.warning(f"Graph Error: {e}")
 
 # ==========================================
@@ -326,7 +330,6 @@ with t_imp:
 with t_code:
     dk = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
-        # [FIX] Button text changed to "Save" and position moved to top-right
         custom_buttons = [{
             "name": "Save", 
             "feather": "Save",
