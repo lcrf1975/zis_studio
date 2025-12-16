@@ -3,7 +3,6 @@ import json
 import requests
 import time
 import re
-import base64
 import streamlit.components.v1 as components
 from requests.auth import HTTPBasicAuth
 from jsonpath_ng import parse 
@@ -33,10 +32,12 @@ def force_refresh():
 def clean_json_string(json_str):
     if not isinstance(json_str, str): return ""
     json_str = json_str.strip()
+    # Remove blocos de código markdown se existirem
     json_str = re.sub(r'^```[a-zA-Z]*\s*', '', json_str)
     json_str = re.sub(r'\s*```$', '', json_str)
     json_str = json_str.replace("\u00a0", " ")
     
+    # Remove comentários estilo C/JS (não permitidos em JSON padrão)
     pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
     def replace(match):
         if match.group(1): return match.group(1) 
@@ -194,6 +195,10 @@ if "editor_content" not in st.session_state:
     st.session_state["editor_content"] = content
     st.session_state["last_synced_code"] = content
 
+# Cache para SVG (Estabilidade Visual)
+if "cached_svg" not in st.session_state: st.session_state["cached_svg"] = None
+if "cached_svg_version" not in st.session_state: st.session_state["cached_svg_version"] = -1
+
 for key in ["zd_subdomain", "zd_email", "zd_token"]:
     if key not in st.session_state: st.session_state[key] = ""
 
@@ -214,130 +219,147 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [CRÍTICO] Renderizador SVG Direto e Seguro
+# [CRÍTICO] Renderizador SVG Estático com Injeção de CSS
+# Garante layout 100% estável gerando a geometria apenas quando o fluxo muda,
+# e aplicando o destaque via CSS (sem recalcular o grafo).
 def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: 
         return st.warning("Graphviz não instalado. Adicione 'graphviz' ao requirements.txt")
 
-    try:
-        dot = graphviz.Digraph(format='svg')
-        # Configurações de layout
-        dot.attr(rankdir='TB', splines='polyline', compound='true')
-        dot.attr(nodesep='0.6', ranksep='0.8') 
-        
-        # Estilo padrão dos nós (Geometria fixa)
-        dot.attr('node', shape='box', style='filled,rounded', 
-                 fontname='Arial', fontsize='12', margin='0.2',
-                 penwidth='2.0')
-        dot.attr('edge', color='#666666', penwidth='1.5', arrowsize='0.7')
-
-        states = get_zis_key(flow_def, "States", {})
-        start_step = get_zis_key(flow_def, "StartAt")
-
-        # Nós fixos
-        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", color="#388E3C", width="0.6", fontcolor="white", penwidth="2.0")
-        dot.node("END", "End", shape="doublecircle", fillcolor="#333333", color="#000000", width="0.5", fontcolor="white", penwidth="2.0")
-
-        # Ordenação para determinismo
-        sorted_items = sorted(states.items())
-        
-        for k, v in sorted_items:
-            sType = get_zis_key(v, "Type", "Unknown")
-            # Truncar nomes muito longos para visualização
-            display_k = k if len(k) < 25 else k[:23] + ".."
-            label = f"{display_k}\n[{sType}]"
+    current_ui_version = st.session_state.get("ui_render_key", 0)
+    
+    # 1. GERAÇÃO DA BASE (Apenas se o fluxo mudou)
+    if st.session_state["cached_svg"] is None or st.session_state["cached_svg_version"] != current_ui_version:
+        try:
+            dot = graphviz.Digraph(format='svg')
+            # Configurações de layout
+            dot.attr(rankdir='TB', splines='polyline', compound='true')
+            dot.attr(nodesep='0.6', ranksep='0.8') 
             
-            # Definição de Cores
-            fill = "#ECECFF"
-            color = "#939393"
-            
-            # Lógica de Seleção Direta
-            if k == selected_step:
-                fill = "#FFF59D"
-                color = "#FBC02D"
-            elif highlight_path and k in highlight_path:
-                fill = "#C8E6C9"
-                color = "#4CAF50"
-            
-            # Criação do Nó
-            dot.node(k, label, fillcolor=fill, color=color)
+            # Estilo padrão dos nós
+            dot.attr('node', shape='box', style='filled,rounded', 
+                     fillcolor='#ECECFF', color='#939393', penwidth='2',
+                     fontname='Arial', fontsize='12', margin='0.2')
+            dot.attr('edge', color='#666666', penwidth='1.5', arrowsize='0.7')
 
-        # Arestas
-        if start_step: dot.edge("START", start_step)
+            states = get_zis_key(flow_def, "States", {})
+            start_step = get_zis_key(flow_def, "StartAt")
 
-        for k, v in sorted_items:
-            next_step = get_zis_key(v, "Next")
-            if next_step: dot.edge(k, next_step)
-            
-            default_step = get_zis_key(v, "Default")
-            if default_step: dot.edge(k, default_step, label="Default", fontsize='10', fontcolor='#666')
-            
-            choices = get_zis_key(v, "Choices", [])
-            for c in choices:
-                c_next = get_zis_key(c, "Next")
-                if c_next: dot.edge(k, c_next, label="Match", fontsize='10', fontcolor='#666')
-            
-            # Conexão com END
-            sType = get_zis_key(v, "Type", "Unknown")
-            is_explicit_end = get_zis_key(v, "End", False)
-            is_terminal = sType in ["Succeed", "Fail"]
-            if is_explicit_end or is_terminal:
-                dot.edge(k, "END")
+            # Nós fixos
+            dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", color="#388E3C", width="0.6", fontcolor="white", id="node_START", fontsize='10')
+            dot.node("END", "End", shape="doublecircle", fillcolor="#333333", color="#000000", width="0.5", fontcolor="white", id="node_END", fontsize='10')
 
-        # Obter SVG Bruto
-        svg_bytes = dot.pipe()
-        svg_str = svg_bytes.decode('utf-8')
-        
-        # [FIX] CORREÇÃO DO TAMANHO "GIGANTE"
-        # 1. Limpamos os cabeçalhos XML que causam problemas em iframes
-        svg_str = re.sub(r'<\?xml.*?>', '', svg_str)
-        svg_str = re.sub(r'<!DOCTYPE.*?>', '', svg_str)
-        
-        # 2. NÃO REMOVEMOS mais os atributos width/height gerados pelo Graphviz.
-        # Eles definem o tamanho intrínseco correto para que as fontes fiquem legíveis.
-        # Se removermos, o navegador tenta esticar para 100% da largura, criando o efeito gigante.
-        
-        # 3. Renderização em Container com Rolagem
-        # Usamos max-width: 100% para garantir que não ultrapasse a tela, 
-        # mas width: auto para respeitar o tamanho natural se for menor.
-        full_html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <style>
-            body {{ margin: 0; padding: 0; background: transparent; display: flex; justify-content: center; }}
-            .svg-wrapper {{
-                width: 100%;
-                display: flex;
-                justify-content: center;
-                align-items: flex-start;
-                padding: 20px;
-                box-sizing: border-box;
-                overflow: auto; /* Permite rolagem se a imagem for maior que o iframe */
+            # Ordenação para determinismo
+            sorted_items = sorted(states.items())
+            
+            for k, v in sorted_items:
+                sType = get_zis_key(v, "Type", "Unknown")
+                # Truncar nomes muito longos
+                display_k = k if len(k) < 25 else k[:23] + ".."
+                label = f"{display_k}\n[{sType}]"
+                # ID sanitizado para seletor CSS
+                safe_id = re.sub(r'[^a-zA-Z0-9]', '_', k)
+                dot.node(k, label, id=f"node_{safe_id}")
+
+            # Arestas
+            if start_step: dot.edge("START", start_step)
+
+            for k, v in sorted_items:
+                next_step = get_zis_key(v, "Next")
+                if next_step: dot.edge(k, next_step)
+                default_step = get_zis_key(v, "Default")
+                if default_step: dot.edge(k, default_step, label="Default", fontsize='10', fontcolor='#666')
+                choices = get_zis_key(v, "Choices", [])
+                for c in choices:
+                    c_next = get_zis_key(c, "Next")
+                    if c_next: dot.edge(k, c_next, label="Match", fontsize='10', fontcolor='#666')
+                
+                # Conexão com END
+                sType = get_zis_key(v, "Type", "Unknown")
+                is_explicit_end = get_zis_key(v, "End", False)
+                is_terminal = sType in ["Succeed", "Fail"]
+                if is_explicit_end or is_terminal:
+                    dot.edge(k, "END")
+
+            # Obter SVG Bruto
+            svg_bytes = dot.pipe()
+            svg_str = svg_bytes.decode('utf-8')
+            
+            # Limpeza para Responsividade: Remove width/height fixos para que o CSS controle
+            svg_str = re.sub(r'<\?xml.*?>', '', svg_str)
+            svg_str = re.sub(r'<!DOCTYPE.*?>', '', svg_str)
+            svg_str = re.sub(r'width="[^"]*"', '', svg_str, count=1)
+            svg_str = re.sub(r'height="[^"]*"', '', svg_str, count=1)
+            
+            st.session_state["cached_svg"] = svg_str
+            st.session_state["cached_svg_version"] = current_ui_version
+            
+        except Exception as e:
+            st.error(f"Render Error: {e}")
+            return
+
+    # 2. RECUPERAR SVG DO CACHE
+    final_svg = st.session_state["cached_svg"]
+    
+    # 3. GERAR CSS PARA DESTAQUES
+    css_rules = []
+    
+    # Destaque de Seleção
+    if selected_step:
+        safe_sel_id = re.sub(r'[^a-zA-Z0-9]', '_', selected_step)
+        css_rules.append(f"""
+            #node_{safe_sel_id} polygon, #node_{safe_sel_id} path, #node_{safe_sel_id} ellipse {{
+                fill: #FFF59D !important;
+                stroke: #FBC02D !important;
+                stroke-width: 3px !important;
             }}
-            svg {{
-                max-width: 100%; /* Encolhe se for mais largo que a tela */
-                height: auto;    /* Mantém a proporção */
-                /* width: auto;  <-- Implícito, usa o tamanho do atributo do SVG */
-            }}
-        </style>
-        </head>
-        <body>
-            <div class="svg-wrapper">
-                {svg_str}
-            </div>
-        </body>
-        </html>
-        """
+            #node_{safe_sel_id} text {{ font-weight: bold; font-size: 14px; }}
+        """)
         
-        # Altura dinâmica estimada para o iframe do Streamlit
-        # Isso garante que a barra de rolagem da página funcione bem
-        est_height = 300 + (len(states) * 100)
-        # Limitamos a altura máxima inicial para não "empurrar" a tela demais, se preferir
-        components.html(full_html, height=est_height, scrolling=True)
-            
-    except Exception as e:
-        st.error(f"Render Error: {e}")
+    # Destaque de Caminho (Debugger) - Usando set() para evitar duplicatas
+    if highlight_path:
+        for step in set(highlight_path):
+            if step == selected_step: continue
+            safe_id = re.sub(r'[^a-zA-Z0-9]', '_', step)
+            css_rules.append(f"""
+                #node_{safe_id} polygon, #node_{safe_id} path, #node_{safe_id} ellipse {{
+                    fill: #C8E6C9 !important;
+                    stroke: #4CAF50 !important;
+                }}
+            """)
+
+    # 4. RENDERIZAR EM CONTAINER RESPONSIVO (Permite rolagem natural)
+    full_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <style>
+        body {{ margin: 0; padding: 0; background: transparent; display: flex; justify-content: center; }}
+        .svg-wrapper {{
+            width: auto;
+            max-width: 100%;
+            padding: 10px;
+            box-sizing: border-box;
+        }}
+        svg {{
+            max-width: 100%; /* Encolhe se for muito largo */
+            height: auto;    /* Mantém a proporção e cresce verticalmente */
+            display: block;
+        }}
+        { "".join(css_rules) }
+    </style>
+    </head>
+    <body>
+        <div class="svg-wrapper">
+            {final_svg}
+        </div>
+    </body>
+    </html>
+    """
+    
+    # Altura estimada para alocação de espaço no Streamlit
+    est_height = 200 + (len(get_zis_key(flow_def, "States", {})) * 120)
+    components.html(full_html, height=est_height, scrolling=True)
 
 # ==========================================
 # 4. ÁREA DE TRABALHO PRINCIPAL
