@@ -30,18 +30,12 @@ def force_refresh():
 # [HELPER] Robust JSON Cleaner
 def clean_json_string(json_str):
     if not isinstance(json_str, str): return ""
-    
-    # 1. Remove espaços em branco do início/fim
     json_str = json_str.strip()
-    
-    # 2. Remove marcadores de Markdown e ZIS wrappers comuns
     json_str = re.sub(r'^```[a-zA-Z]*\s*', '', json_str)
     json_str = re.sub(r'\s*```$', '', json_str)
-    
-    # 3. Remove caracteres invisíveis
     json_str = json_str.replace("\u00a0", " ")
     
-    # 4. Remove Comentários estilo C
+    # Remove C-style comments
     pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
     def replace(match):
         if match.group(1): return match.group(1) 
@@ -132,10 +126,9 @@ def sanitize_step(step_data):
 def try_sync_from_editor(force_ui_update=False):
     content = st.session_state.get("editor_content", "")
     
-    # [FIX] If editor is empty, try to recover from last known valid flow_json
+    # If empty, try backup
     if not content or not content.strip():
         if st.session_state.get("flow_json"):
-            # Recover content
             content = json.dumps(st.session_state["flow_json"], indent=2)
             st.session_state["editor_content"] = content
         else:
@@ -210,41 +203,49 @@ def test_connection():
 def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
-        flow_hash = str(hash(json.dumps(flow_def, sort_keys=True)))
+        # [FIX] Graph Optimization Attributes
+        # 1. size="10,10": Limits the max size to 10 inches, preventing giant images.
+        # 2. ranksep and nodesep: Controls spacing between nodes.
         dot = graphviz.Digraph(comment='ZIS Flow')
-        dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
-        dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12')
-        dot.attr('edge', color='#888888') 
+        dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent', size="10,10", ratio="auto", nodesep="0.6", ranksep="0.5")
+        dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12', margin="0.2")
+        dot.attr('edge', color='#666666', arrowsize="0.8") 
         
         visited = set(highlight_path) if highlight_path else set()
         start = get_zis_key(flow_def, "StartAt")
         
-        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled")
+        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled", fixedsize="true")
         if start: dot.edge("START", start)
 
         states = get_zis_key(flow_def, "States", {})
         for k, v in states.items():
-            fill = "#e0e0e0"; pen = "1"
-            if k in visited: fill = "#C8E6C9"; pen = "2"
-            if k == selected_step: fill = "#FFF59D"; pen = "3"
+            fill = "#ffffff"; pen = "1"; color = "#999999"
+            
+            # Highlight Logic
+            if k in visited: fill = "#C8E6C9"; pen = "2"; color="#4CAF50"
+            if k == selected_step: fill = "#FFF59D"; pen = "3"; color="#FBC02D"
 
             sType = get_zis_key(v, "Type", "Unknown")
-            dot.node(k, f"{k}\n({sType})", fillcolor=fill, penwidth=pen)
+            
+            # Better Labels
+            label_html = f"<{k}<BR/><FONT POINT-SIZE='10' COLOR='#555555'>({sType})</FONT>>"
+            dot.node(k, label_html, fillcolor=fill, color=color, penwidth=pen)
             
             next_step = get_zis_key(v, "Next")
             if next_step: dot.edge(k, next_step)
             
             default_step = get_zis_key(v, "Default")
-            if default_step: dot.edge(k, default_step, label="Default")
+            if default_step: dot.edge(k, default_step, label="Default", fontsize="10", fontcolor="#555555")
             
             choices = get_zis_key(v, "Choices", [])
             for c in choices:
                 c_next = get_zis_key(c, "Next")
-                if c_next: dot.edge(k, c_next, label="If Match")
+                if c_next: dot.edge(k, c_next, label="If Match", fontsize="10", fontcolor="#555555")
             
             if get_zis_key(v, "End"): 
-                dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
+                dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled", fixedsize="true")
                 dot.edge(k, "END")
+        
         st.graphviz_chart(dot, use_container_width=True) 
     except Exception as e: st.warning(f"Graph Error: {e}")
 
@@ -254,7 +255,6 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
 st.title("ZIS Studio")
 t_set, t_imp, t_code, t_vis, t_dep, t_deb = st.tabs(["⚙️ Settings", "📥 Import", "📝 Code Editor", "🎨 Visual Designer", "🚀 Deploy", "🐞 Debugger"])
 
-# --- TAB 1: SETTINGS ---
 with t_set:
     st.markdown("### 🔑 Zendesk Credentials")
     c1, c2 = st.columns([1, 1])
@@ -270,7 +270,6 @@ with t_set:
     with c2:
         if st.session_state.get("is_connected"): st.success(f"✅ Connected to: **{st.session_state.zd_subdomain}**")
 
-# --- TAB 2: IMPORT ---
 with t_imp:
     st.markdown("### 🔎 Find Existing Flows")
     if not st.session_state.get("is_connected"): st.warning("Configure Settings first.")
@@ -308,34 +307,31 @@ with t_imp:
                             st.session_state["editor_key"] += 1
                             st.toast("Loaded!", icon="🎉"); time.sleep(0.5); force_refresh(); break
 
-# --- TAB 3: CODE ---
 with t_code:
     dk = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
         resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=600, key=dk, options={"showLineNumbers": True, "wrap": True})
         
-        # [CRITICAL FIX] Only update state if content is VALID and NOT EMPTY
         if resp and resp.get("text") is not None:
             new_text = resp["text"]
-            if new_text.strip(): # Ignore empty strings to prevent state loss
+            if new_text.strip(): 
                 st.session_state["editor_content"] = new_text
                 try_sync_from_editor(False)
         
         c_btn, _ = st.columns([1,4])
         with c_btn:
             if st.button("💾 Salvar e Atualizar Fluxo", type="primary"):
-                # Force sync from memory
                 ok, err = try_sync_from_editor(False)
                 if ok: 
-                    st.toast("Salvo!", icon="✅")
-                    time.sleep(0.1)
-                    force_refresh()
+                    st.toast("Salvo!", icon="✅"); time.sleep(0.1); force_refresh()
                 else: 
                     st.error(f"❌ Erro de Sintaxe: {err}")
 
-# --- TAB 4: VISUAL DESIGNER ---
 with t_vis:
+    # [FIX] ALWAYS try to sync from the current editor content when entering this tab
+    # This ensures that even if 'Save' wasn't clicked, we try to use the latest typed code.
     ok, err = try_sync_from_editor(False)
+    
     if not ok: st.error(f"⚠️ Invalid JSON: {err}")
     else:
         c1, c2 = st.columns([1, 2])
@@ -344,7 +340,10 @@ with t_vis:
         keys = list(states.keys())
         with c1:
             st.subheader("Config")
+            # Using force_refresh keys in selectbox can help if it gets stuck, 
+            # but usually refreshing 'keys' list is enough.
             sel = st.selectbox("Step", ["(Select)"] + keys)
+            
             with st.expander("➕ Add Step"):
                 nn = st.text_input("Name"); nt = st.selectbox("Type", ["Action", "Choice", "Wait", "Pass", "Succeed", "Fail"])
                 if st.button("Add"): 
@@ -412,7 +411,6 @@ with t_vis:
         with c2:
             render_flow_graph(curr, selected_step=sel if sel != "(Select)" else None)
 
-# --- TAB 5: DEPLOY (RESTORED) ---
 with t_dep:
     if not st.session_state.get("is_connected"): st.warning("Connect in Settings first.")
     else:
@@ -441,7 +439,6 @@ with t_dep:
                             status.update(label="Failed", state="error"); st.error(r.text)
                     except Exception as e: st.error(str(e))
 
-# --- TAB 6: DEBUGGER (RESTORED) ---
 with t_deb:
     col_input, col_graph = st.columns([1, 1])
     with col_input:
