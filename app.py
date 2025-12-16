@@ -4,6 +4,7 @@ import requests
 import time
 import re
 import base64
+import copy
 import streamlit.components.v1 as components
 from requests.auth import HTTPBasicAuth
 from jsonpath_ng import parse 
@@ -293,7 +294,6 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     css_rules = []
     if selected_step:
         safe_sel_id = re.sub(r'[^a-zA-Z0-9]', '_', selected_step)
-        # REMOVIDA A REGRA DE TEXTO NEGRITO AQUI
         css_rules.append(f"""
             #node_{safe_sel_id} polygon, #node_{safe_sel_id} path, #node_{safe_sel_id} ellipse {{
                 fill: #FFF59D !important;
@@ -575,7 +575,28 @@ with t_dep:
                         res_name = f"{safe_bun}_flow"
                         norm_def = normalize_zis_keys(clean_flow_logic(st.session_state["flow_json"]))
                         
-                        payload = {"zis_template_version": "2019-10-14", "name": safe_bun, "resources": {res_name: {"type": "ZIS::Flow", "properties": {"name": res_name, "definition": norm_def}}}}
+                        # [FIXED LOGIC START] ========================
+                        # Auto-fix Action Names to meet ZIS requirements
+                        status.write("Validating and fixing Action Names...")
+                        final_def = copy.deepcopy(norm_def)
+                        states_to_fix = final_def.get("States", {})
+                        
+                        for s_name, s_body in states_to_fix.items():
+                            if s_body.get("Type") == "Action":
+                                a_name = s_body.get("ActionName", "")
+                                
+                                # Fix 1: ZIS Common Transform -> Jq
+                                if a_name == "ZIS::Common::Transform":
+                                    s_body["ActionName"] = "zis:common:transform:Jq"
+                                    
+                                # Fix 2: Custom Actions missing prefix
+                                elif a_name and not a_name.startswith("zis:"):
+                                    # Construct valid ZIS name: zis:{integration}:action:{name}
+                                    new_name = f"zis:{target_int}:action:{a_name}"
+                                    s_body["ActionName"] = new_name
+                        # [FIXED LOGIC END] ==========================
+
+                        payload = {"zis_template_version": "2019-10-14", "name": safe_bun, "resources": {res_name: {"type": "ZIS::Flow", "properties": {"name": res_name, "definition": final_def}}}}
                         r = requests.post(f"{get_base_url()}/{target_int}/bundles", auth=get_auth(), json=payload, headers={"Content-Type": "application/json"})
                         if r.status_code in [200, 201]:
                             st.balloons(); status.update(label="Deployed!", state="complete"); st.success(f"Deployed {safe_bun} to {target_int}")
