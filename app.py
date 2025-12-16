@@ -3,13 +3,19 @@ import json
 import requests
 import time
 import re
-import streamlit.components.v1 as components
+import base64
 from requests.auth import HTTPBasicAuth
 from jsonpath_ng import parse 
 
 # ==========================================
 # 0. SYSTEM SETUP
 # ==========================================
+try:
+    import graphviz
+    HAS_GRAPHVIZ = True
+except ImportError:
+    HAS_GRAPHVIZ = False
+
 try:
     from code_editor import code_editor
     HAS_EDITOR = True
@@ -185,7 +191,7 @@ for key in ["zd_subdomain", "zd_email", "zd_token"]:
 from zis_engine import ZISFlowEngine
 
 # ==========================================
-# 3. HELPERS & MERMAID RENDERER
+# 3. HELPERS & STATIC SVG RENDERER
 # ==========================================
 def get_auth():
     return HTTPBasicAuth(f"{st.session_state.zd_email}/token", st.session_state.zd_token) if st.session_state.zd_token else None
@@ -199,131 +205,103 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [NEW] Mermaid.js Renderer with CSS Injection for Stability
-def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
-    # 1. Init
-    mermaid_lines = ["%%{init: {'flowchart': {'htmlLabels': false, 'curve': 'linear'}} }%%"]
-    mermaid_lines.append("flowchart TB")
-    
-    # 2. Base Styles
-    mermaid_lines.append("classDef default fill:#ECECFF,stroke:#939393,stroke-width:2px,rx:5,ry:5;")
-    mermaid_lines.append("classDef terminal fill:#333,stroke:#333,stroke-width:2px,color:#fff;")
-    mermaid_lines.append("classDef start fill:#4CAF50,stroke:#4CAF50,stroke-width:2px,color:#fff;")
+# [NEW] Static SVG Renderer with CSS Injection
+# This ensures 100% stable layout because Graphviz runs ONLY on the raw structure,
+# and highlighting is done by manipulating the output SVG text, not the input graph logic.
+def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
+    if not HAS_GRAPHVIZ: 
+        return st.warning("Graphviz not installed. Please add 'graphviz' to requirements.txt")
 
-    visited = set(highlight_path) if highlight_path else set()
-    states = get_zis_key(flow_def, "States", {})
-    start_step = get_zis_key(flow_def, "StartAt")
-    
-    # 3. Nodes Definition
-    mermaid_lines.append("START((Start)):::start")
-    mermaid_lines.append("END(((End))):::terminal")
-
-    sorted_items = sorted(states.items())
-    
-    for k, v in sorted_items:
-        sType = get_zis_key(v, "Type", "Unknown")
-        label = f"{k} [{sType}]"
+    try:
+        # 1. Create Graph with FIXED Geometry Settings
+        dot = graphviz.Digraph(format='svg')
+        dot.attr(rankdir='TB', splines='polyline')
+        dot.attr(nodesep='0.6', ranksep='0.7')
         
-        if sType == "Choice":
-            shape_open = "{"; shape_close = "}"
-        elif sType in ["Succeed", "Fail"]:
-            shape_open = "(["; shape_close = "])" 
-        else:
-            shape_open = "["; shape_close = "]" 
+        # Standard Node Attributes
+        dot.attr('node', shape='box', style='filled,rounded', 
+                 fillcolor='#ECECFF', color='#939393', penwidth='2',
+                 fontname='Arial', fontsize='12', margin='0.2')
+        dot.attr('edge', color='#666666', penwidth='1.5', arrowsize='0.8')
+
+        visited = set(highlight_path) if highlight_path else set()
+        states = get_zis_key(flow_def, "States", {})
+        start_step = get_zis_key(flow_def, "StartAt")
+
+        # 2. Define Nodes (Strictly Sorted)
+        # ID attribute is crucial for CSS targeting later
+        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", color="#388E3C", width="0.8", fontcolor="white", id="node_START")
+        dot.node("END", "End", shape="doublecircle", fillcolor="#333333", color="#000000", width="0.7", fontcolor="white", id="node_END")
+
+        sorted_items = sorted(states.items())
+        for k, v in sorted_items:
+            sType = get_zis_key(v, "Type", "Unknown")
+            label = f"{k}\n[{sType}]"
             
-        mermaid_lines.append(f"{k}{shape_open}\"{label}\"{shape_close}")
+            # Basic styling based on visited status (can be baked in as it doesn't change geometry much)
+            # But SELECTION is handled via CSS to be safe
+            fill = "#ECECFF"
+            if k in visited: fill = "#C8E6C9"
+            
+            # Generate Node with ID matching the Step Name
+            dot.node(k, label, id=f"node_{k}", fillcolor=fill)
 
-    # 4. Connections
-    if start_step:
-        mermaid_lines.append(f"START --> {start_step}")
+        # 3. Define Edges
+        if start_step: dot.edge("START", start_step)
 
-    for k, v in sorted_items:
-        next_step = get_zis_key(v, "Next")
-        if next_step:
-            mermaid_lines.append(f"{k} --> {next_step}")
-        
-        default_step = get_zis_key(v, "Default")
-        if default_step:
-            mermaid_lines.append(f"{k} -- Default --> {default_step}")
-        
-        choices = get_zis_key(v, "Choices", [])
-        for i, c in enumerate(choices):
-            c_next = get_zis_key(c, "Next")
-            if c_next:
-                lbl = "Rule"
-                if "StringEquals" in c: lbl = f"== {c['StringEquals']}"
-                mermaid_lines.append(f"{k} -- {lbl} --> {c_next}")
+        for k, v in sorted_items:
+            next_step = get_zis_key(v, "Next")
+            if next_step: dot.edge(k, next_step)
+            
+            default_step = get_zis_key(v, "Default")
+            if default_step: dot.edge(k, default_step, label="Default")
+            
+            choices = get_zis_key(v, "Choices", [])
+            for c in choices:
+                c_next = get_zis_key(c, "Next")
+                if c_next: dot.edge(k, c_next, label="Match")
+            
+            # [FIXED] End Connection Logic
+            sType = get_zis_key(v, "Type", "Unknown")
+            is_explicit_end = get_zis_key(v, "End", False)
+            is_terminal = sType in ["Succeed", "Fail"] # Terminal types imply end
+            
+            if is_explicit_end or is_terminal:
+                dot.edge(k, "END")
 
-        # End Connections
-        sType = get_zis_key(v, "Type", "Unknown")
-        is_terminal = sType in ["Succeed", "Fail"]
-        is_explicit_end = get_zis_key(v, "End", False)
-        
-        if is_explicit_end or is_terminal:
-            mermaid_lines.append(f"{k} --> END")
+        # 4. Generate Raw SVG String
+        svg_bytes = dot.pipe()
+        svg_str = svg_bytes.decode('utf-8')
 
-    # 5. [CRITICAL CHANGE] DO NOT APPLY SELECTED CLASS IN MERMAID CODE
-    # This keeps the Mermaid definition string CONSTANT regardless of selection.
-    # Constant String = Constant Layout.
-    # We only apply 'visited' class if needed for debugger, but for selection we use CSS injection below.
-    
-    # Apply visited path for debugger
-    if visited:
-        for k in visited:
-             mermaid_lines.append(f"class {k} visited;")
+        # 5. CSS INJECTION FOR SELECTION
+        # We inject a <style> block directly into the SVG to highlight the selected ID.
+        # This changes colors WITHOUT recalculating layout.
+        if selected_step:
+            # We target the polygon/path inside the group with the ID
+            style_block = f"""
+            <style>
+                #node_{selected_step} polygon, #node_{selected_step} path {{
+                    fill: #FFF59D !important;
+                    stroke: #FBC02D !important;
+                    stroke-width: 4px !important;
+                }}
+            </style>
+            """
+            # Insert style right after <svg ...> tag
+            insert_idx = svg_str.find(">") + 1
+            svg_str = svg_str[:insert_idx] + style_block + svg_str[insert_idx:]
 
-    mermaid_code = "\n".join(mermaid_lines)
-    
-    # 6. CSS Injection for Selection Highlighting
-    # We target the specific ID generated by Mermaid for the selected node.
-    # Mermaid IDs typically follow pattern 'flowchart-{node_id}-...'
-    css_highlight = ""
-    if selected_step:
-        css_highlight = f"""
-        g[id*='flowchart-{selected_step}-'] rect,
-        g[id*='flowchart-{selected_step}-'] polygon,
-        g[id*='flowchart-{selected_step}-'] circle,
-        g[id*='flowchart-{selected_step}-'] path {{
-            fill: #FFF59D !important;
-            stroke: #FBC02D !important;
-            stroke-width: 3px !important;
-        }}
-        """
+        # 6. Render as HTML (Native SVG)
+        # Using a div with center alignment
+        st.markdown(f"""
+            <div style="width: 100%; overflow-x: auto; text-align: center; padding: 10px; border: 1px solid #ddd; border-radius: 10px; background-color: white;">
+                {svg_str}
+            </div>
+            """, unsafe_allow_html=True)
 
-    html_code = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <script type="module">
-        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({{ 
-            startOnLoad: true, 
-            theme: 'base', 
-            securityLevel: 'loose',
-            flowchart: {{ htmlLabels: false }}
-        }});
-    </script>
-    <style>
-        .mermaid {{ display: flex; justify-content: center; }}
-        /* Visited Class for Debugger */
-        .visited rect, .visited polygon, .visited circle, .visited path {{
-            fill: #C8E6C9 !important;
-            stroke: #4CAF50 !important;
-        }}
-        /* Dynamic Selection Highlight */
-        {css_highlight}
-    </style>
-    </head>
-    <body>
-        <div class="mermaid">
-            {mermaid_code}
-        </div>
-    </body>
-    </html>
-    """
-    
-    dyn_height = 400 + (len(states) * 80)
-    components.html(html_code, height=min(dyn_height, 1000), scrolling=True)
+    except Exception as e:
+        st.error(f"Render Error: {e}")
+        st.caption("Certifique-se de que 'graphviz' está instalado no requirements.txt")
 
 # ==========================================
 # 4. MAIN WORKSPACE
@@ -501,7 +479,7 @@ with t_vis:
                     st.success("Saved"); force_refresh()
 
         with c2:
-            render_flow_mermaid(curr, selected_step=sel if sel != "(Select)" else None)
+            render_flow_static_svg(curr, selected_step=sel if sel != "(Select)" else None)
 
 with t_dep:
     if not st.session_state.get("is_connected"): st.warning("Connect in Settings first.")
@@ -549,4 +527,4 @@ with t_deb:
     with col_graph:
         st.markdown("### Trace")
         current_path = st.session_state["debug_res"][2] if "debug_res" in st.session_state else None
-        render_flow_mermaid(st.session_state["flow_json"], current_path)
+        render_flow_static_svg(st.session_state["flow_json"], current_path)
