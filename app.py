@@ -589,6 +589,12 @@ with t_dep:
                                 if a_name == "ZIS::Common::Transform":
                                     s_body["ActionName"] = "zis:common:transform:Jq"
                                     
+                                    # [NEW FIX] Validation often fails if 'data' is an object. 
+                                    # Convert to string if necessary.
+                                    params = s_body.get("Parameters", {})
+                                    if "data" in params and isinstance(params["data"], (dict, list)):
+                                        params["data"] = json.dumps(params["data"])
+
                                 # Fix 2: Custom Actions missing prefix
                                 elif a_name and not a_name.startswith("zis:"):
                                     # Construct valid ZIS name: zis:{integration}:action:{name}
