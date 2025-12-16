@@ -210,7 +210,7 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [NEW] CACHED SVG RENDERER WITH SCROLLING SUPPORT
+# [NEW] CACHED SVG RENDERER - NATURAL SIZE
 def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: 
         return st.warning("Graphviz not installed. Please add 'graphviz' to requirements.txt")
@@ -272,12 +272,12 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
             svg_bytes = dot.pipe()
             svg_str = svg_bytes.decode('utf-8')
             
-            # [FIX] RESPONSIVENESS: Remove fixed sizes to allow scaling + scrolling
+            # [FIX] RESPONSIVENESS:
+            # We clean XML headers but we DO NOT remove width/height attributes.
+            # Graphviz calculates the perfect size for readability.
+            # We let CSS scale it DOWN if needed (max-width), but not stretch it up.
             svg_str = re.sub(r'<\?xml.*?>', '', svg_str)
             svg_str = re.sub(r'<!DOCTYPE.*?>', '', svg_str)
-            # We completely remove width and height attributes so CSS determines size
-            svg_str = re.sub(r'width="[^"]*"', '', svg_str, count=1)
-            svg_str = re.sub(r'height="[^"]*"', '', svg_str, count=1)
             
             st.session_state["cached_svg"] = svg_str
             st.session_state["cached_svg_version"] = current_ui_version
@@ -313,29 +313,24 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
                 }}
             """)
 
-    # 4. RENDER IN UNLIMITED HEIGHT CONTAINER
-    # - width: 100% fits the container horizontally
-    # - height: auto ensures it grows as much as needed vertically
-    # - No overflow: auto here, we let the main page scroll
-    # - No forced max-height (vh)
+    # 4. RENDER IN RESPONSIVE CONTAINER
+    # max-width: 100% ensures it shrinks on small screens but doesn't blow up on large ones.
     full_html = f"""
     <!DOCTYPE html>
     <html>
     <head>
     <style>
-        body {{ margin: 0; padding: 0; background: transparent; }}
+        body {{ margin: 0; padding: 0; background: transparent; display: flex; justify-content: center; }}
         .svg-wrapper {{
-            width: 100%;
-            display: flex;
-            justify-content: center;
-            align-items: flex-start;
+            width: auto;
+            max-width: 100%;
             padding: 10px;
             box-sizing: border-box;
         }}
         svg {{
-            width: 100%;      /* Fill container width */
-            height: auto;     /* Infinite height growth */
-            min-width: 600px; /* Minimum width for readability */
+            max-width: 100%; /* Shrink if too wide */
+            height: auto;    /* Maintain aspect ratio */
+            display: block;  /* Remove inline gaps */
         }}
         { "".join(css_rules) }
     </style>
@@ -349,9 +344,8 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     """
     
     # Estimate height generously so Streamlit allocates space. 
-    # 100px per state usually covers the node + spacing comfortably.
     est_height = 200 + (len(get_zis_key(flow_def, "States", {})) * 120)
-    components.html(full_html, height=est_height, scrolling=False)
+    components.html(full_html, height=est_height, scrolling=True)
 
 # ==========================================
 # 4. MAIN WORKSPACE
