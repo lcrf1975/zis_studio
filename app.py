@@ -185,6 +185,10 @@ if "editor_content" not in st.session_state:
     st.session_state["editor_content"] = content
     st.session_state["last_synced_code"] = content
 
+# Cache for SVG to prevent layout jumping
+if "cached_svg" not in st.session_state: st.session_state["cached_svg"] = None
+if "cached_svg_version" not in st.session_state: st.session_state["cached_svg_version"] = -1
+
 for key in ["zd_subdomain", "zd_email", "zd_token"]:
     if key not in st.session_state: st.session_state[key] = ""
 
@@ -205,108 +209,132 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [NEW] Static SVG Renderer with Post-Process Highlighting
-# This is the ultimate fix for stability:
-# 1. Generate Graphviz geometry WITHOUT knowing selected step (Input is identical = Layout is identical)
-# 2. Inject CSS style block into SVG string to highlight specific ID (Output changes color only)
+# [NEW] CACHED Static SVG Renderer
+# This guarantees absolute stability by generating the graph ONCE per version change.
+# Highlights are applied via CSS Injection into the reused SVG string.
 def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: 
         return st.warning("Graphviz not installed. Please add 'graphviz' to requirements.txt")
 
-    try:
-        # 1. Create Graph with FIXED Geometry Settings
-        dot = graphviz.Digraph(format='svg')
-        dot.attr(rankdir='TB', splines='polyline')
-        dot.attr(nodesep='0.6', ranksep='0.7')
+    current_ui_version = st.session_state.get("ui_render_key", 0)
+    
+    # 1. GENERATE BASE GRAPH (Only if flow changed)
+    # We ignore 'selected_step' and 'highlight_path' here to ensure structure is identical
+    if st.session_state["cached_svg"] is None or st.session_state["cached_svg_version"] != current_ui_version:
+        try:
+            dot = graphviz.Digraph(format='svg')
+            dot.attr(rankdir='TB', splines='polyline')
+            dot.attr(nodesep='0.6', ranksep='0.7')
+            
+            # Standard Node Attributes
+            dot.attr('node', shape='box', style='filled,rounded', 
+                     fillcolor='#ECECFF', color='#939393', penwidth='2',
+                     fontname='Arial', fontsize='12', margin='0.2')
+            dot.attr('edge', color='#666666', penwidth='1.5', arrowsize='0.8')
+
+            states = get_zis_key(flow_def, "States", {})
+            start_step = get_zis_key(flow_def, "StartAt")
+
+            # Nodes (Sorted)
+            dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", color="#388E3C", width="0.8", fontcolor="white", id="node_START")
+            dot.node("END", "End", shape="doublecircle", fillcolor="#333333", color="#000000", width="0.7", fontcolor="white", id="node_END")
+
+            sorted_items = sorted(states.items())
+            for k, v in sorted_items:
+                sType = get_zis_key(v, "Type", "Unknown")
+                label = f"{k}\n[{sType}]"
+                # Sanitize ID
+                safe_id = re.sub(r'[^a-zA-Z0-9]', '_', k)
+                # Generate Neutral Node
+                dot.node(k, label, id=f"node_{safe_id}")
+
+            # Edges
+            if start_step: dot.edge("START", start_step)
+
+            for k, v in sorted_items:
+                next_step = get_zis_key(v, "Next")
+                if next_step: dot.edge(k, next_step)
+                
+                default_step = get_zis_key(v, "Default")
+                if default_step: dot.edge(k, default_step, label="Default")
+                
+                choices = get_zis_key(v, "Choices", [])
+                for c in choices:
+                    c_next = get_zis_key(c, "Next")
+                    if c_next: dot.edge(k, c_next, label="Match")
+                
+                # End Connection
+                sType = get_zis_key(v, "Type", "Unknown")
+                is_explicit_end = get_zis_key(v, "End", False)
+                is_terminal = sType in ["Succeed", "Fail"]
+                if is_explicit_end or is_terminal:
+                    dot.edge(k, "END")
+
+            # Store Raw SVG
+            svg_bytes = dot.pipe()
+            svg_str = svg_bytes.decode('utf-8')
+            
+            # Clean XML Headers for better HTML embedding
+            svg_str = re.sub(r'<\?xml.*?>', '', svg_str)
+            svg_str = re.sub(r'<!DOCTYPE.*?>', '', svg_str)
+            
+            st.session_state["cached_svg"] = svg_str
+            st.session_state["cached_svg_version"] = current_ui_version
+            
+        except Exception as e:
+            st.error(f"Render Error: {e}")
+            return
+
+    # 2. RETRIEVE CACHED SVG
+    final_svg = st.session_state["cached_svg"]
+    
+    # 3. CONSTRUCT CSS FOR DYNAMIC HIGHLIGHTS
+    # This applies colors on top of the static geometry
+    css_rules = []
+    
+    # Highlight Selected
+    if selected_step:
+        safe_sel_id = re.sub(r'[^a-zA-Z0-9]', '_', selected_step)
+        css_rules.append(f"""
+            g[id="node_{safe_sel_id}"] path, 
+            g[id="node_{safe_sel_id}"] polygon,
+            g[id="node_{safe_sel_id}"] ellipse {{
+                fill: #FFF59D !important;
+                stroke: #FBC02D !important;
+                stroke-width: 4px !important;
+            }}
+        """)
         
-        # Standard Node Attributes
-        dot.attr('node', shape='box', style='filled,rounded', 
-                 fillcolor='#ECECFF', color='#939393', penwidth='2',
-                 fontname='Arial', fontsize='12', margin='0.2')
-        dot.attr('edge', color='#666666', penwidth='1.5', arrowsize='0.8')
-
-        states = get_zis_key(flow_def, "States", {})
-        start_step = get_zis_key(flow_def, "StartAt")
-
-        # 2. Define Nodes (Strictly Sorted)
-        # ID attribute is crucial for CSS targeting later
-        # NOTE: We do NOT use 'selected_step' inside this loop to prevent layout changes
-        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", color="#388E3C", width="0.8", fontcolor="white", id="node_START")
-        dot.node("END", "End", shape="doublecircle", fillcolor="#333333", color="#000000", width="0.7", fontcolor="white", id="node_END")
-
-        sorted_items = sorted(states.items())
-        for k, v in sorted_items:
-            sType = get_zis_key(v, "Type", "Unknown")
-            label = f"{k}\n[{sType}]"
-            
-            # Generate Node with ID matching the Step Name
-            # We enforce a sanitized ID to be safe for CSS selectors
-            safe_id = re.sub(r'[^a-zA-Z0-9]', '_', k)
-            dot.node(k, label, id=f"node_{safe_id}")
-
-        # 3. Define Edges
-        if start_step: dot.edge("START", start_step)
-
-        for k, v in sorted_items:
-            next_step = get_zis_key(v, "Next")
-            if next_step: dot.edge(k, next_step)
-            
-            default_step = get_zis_key(v, "Default")
-            if default_step: dot.edge(k, default_step, label="Default")
-            
-            choices = get_zis_key(v, "Choices", [])
-            for c in choices:
-                c_next = get_zis_key(c, "Next")
-                if c_next: dot.edge(k, c_next, label="Match")
-            
-            # End Connection Logic
-            sType = get_zis_key(v, "Type", "Unknown")
-            is_explicit_end = get_zis_key(v, "End", False)
-            is_terminal = sType in ["Succeed", "Fail"]
-            
-            if is_explicit_end or is_terminal:
-                dot.edge(k, "END")
-
-        # 4. Generate Raw SVG String
-        svg_bytes = dot.pipe()
-        svg_str = svg_bytes.decode('utf-8')
-        
-        # 5. CSS INJECTION FOR SELECTION
-        # We inject a <style> block directly into the SVG to highlight the selected ID.
-        # This changes colors WITHOUT recalculating layout.
-        if selected_step:
-            safe_sel_id = re.sub(r'[^a-zA-Z0-9]', '_', selected_step)
-            # We target the polygon/path inside the group with the ID
-            # Usually Graphviz wraps node content in a group <g id="node_XXX" ...>
-            style_block = f"""
-            <style>
-                g[id="node_{safe_sel_id}"] path, 
-                g[id="node_{safe_sel_id}"] polygon,
-                g[id="node_{safe_sel_id}"] ellipse {{
-                    fill: #FFF59D !important;
-                    stroke: #FBC02D !important;
-                    stroke-width: 4px !important;
+    # Highlight Path (Debugger)
+    if highlight_path:
+        for step in highlight_path:
+            # Don't overwrite selection color
+            if step == selected_step: continue
+            safe_id = re.sub(r'[^a-zA-Z0-9]', '_', step)
+            css_rules.append(f"""
+                g[id="node_{safe_id}"] path, 
+                g[id="node_{safe_id}"] polygon,
+                g[id="node_{safe_id}"] ellipse {{
+                    fill: #C8E6C9 !important;
+                    stroke: #4CAF50 !important;
                 }}
-            </style>
-            """
-            # Insert style right after <svg ...> tag
-            # We regex search for the end of the svg opening tag
-            match = re.search(r'<svg[^>]*>', svg_str)
-            if match:
-                insert_idx = match.end()
-                svg_str = svg_str[:insert_idx] + style_block + svg_str[insert_idx:]
+            """)
 
-        # 6. Render as HTML (Native SVG)
-        # Using a div with center alignment
-        st.markdown(f"""
-            <div style="width: 100%; overflow-x: auto; text-align: center; padding: 10px; border: 1px solid #ddd; border-radius: 10px; background-color: white;">
-                {svg_str}
-            </div>
-            """, unsafe_allow_html=True)
+    # 4. INJECT CSS
+    if css_rules:
+        style_block = f"<style>{''.join(css_rules)}</style>"
+        # Insert style right after opening <svg ...> tag
+        match = re.search(r'<svg[^>]*>', final_svg)
+        if match:
+            insert_idx = match.end()
+            final_svg = final_svg[:insert_idx] + style_block + final_svg[insert_idx:]
 
-    except Exception as e:
-        st.error(f"Render Error: {e}")
-        st.caption("Certifique-se de que 'graphviz' está instalado no requirements.txt")
+    # 5. RENDER
+    st.markdown(f"""
+        <div style="width: 100%; overflow-x: auto; text-align: center; padding: 10px; border: 1px solid #ddd; border-radius: 10px; background-color: white;">
+            {final_svg}
+        </div>
+        """, unsafe_allow_html=True)
 
 # ==========================================
 # 4. MAIN WORKSPACE
