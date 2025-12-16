@@ -126,7 +126,7 @@ def sanitize_step(step_data):
 def try_sync_from_editor(force_ui_update=False):
     content = st.session_state.get("editor_content", "")
     
-    # If empty, try backup
+    # Backup recovery
     if not content or not content.strip():
         if st.session_state.get("flow_json"):
             content = json.dumps(st.session_state["flow_json"], indent=2)
@@ -180,9 +180,6 @@ if "editor_content" not in st.session_state:
 for key in ["zd_subdomain", "zd_email", "zd_token"]:
     if key not in st.session_state: st.session_state[key] = ""
 
-# ==========================================
-# 2. LOGIC ENGINE
-# ==========================================
 from zis_engine import ZISFlowEngine
 
 # ==========================================
@@ -203,47 +200,47 @@ def test_connection():
 def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
-        # [FIX] Graph Optimization Attributes
-        # 1. size="10,10": Limits the max size to 10 inches, preventing giant images.
-        # 2. ranksep and nodesep: Controls spacing between nodes.
+        # [FIX] Graph Optimization Attributes for compactness
         dot = graphviz.Digraph(comment='ZIS Flow')
-        dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent', size="10,10", ratio="auto", nodesep="0.6", ranksep="0.5")
-        dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12', margin="0.2")
-        dot.attr('edge', color='#666666', arrowsize="0.8") 
+        
+        # 'dpi': 72 keeps it standard screen res (preventing huge retina scaling)
+        # 'nodesep': Reduces space between nodes
+        # 'ranksep': Reduces space between levels
+        dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent', dpi='72', nodesep='0.4', ranksep='0.4')
+        dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='10', margin='0.1', height='0.4')
+        dot.attr('edge', color='#666666', arrowsize='0.6') 
         
         visited = set(highlight_path) if highlight_path else set()
         start = get_zis_key(flow_def, "StartAt")
         
-        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled", fixedsize="true")
+        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.5", height="0.5", fixedsize="true", style="filled")
         if start: dot.edge("START", start)
 
         states = get_zis_key(flow_def, "States", {})
         for k, v in states.items():
             fill = "#ffffff"; pen = "1"; color = "#999999"
-            
-            # Highlight Logic
             if k in visited: fill = "#C8E6C9"; pen = "2"; color="#4CAF50"
             if k == selected_step: fill = "#FFF59D"; pen = "3"; color="#FBC02D"
 
             sType = get_zis_key(v, "Type", "Unknown")
             
-            # Better Labels
-            label_html = f"<{k}<BR/><FONT POINT-SIZE='10' COLOR='#555555'>({sType})</FONT>>"
+            # Simplified Label
+            label_html = f"<{k}<BR/><FONT POINT-SIZE='8' COLOR='#555555'>{sType}</FONT>>"
             dot.node(k, label_html, fillcolor=fill, color=color, penwidth=pen)
             
             next_step = get_zis_key(v, "Next")
             if next_step: dot.edge(k, next_step)
             
             default_step = get_zis_key(v, "Default")
-            if default_step: dot.edge(k, default_step, label="Default", fontsize="10", fontcolor="#555555")
+            if default_step: dot.edge(k, default_step, label="Default", fontsize="8", fontcolor="#555555")
             
             choices = get_zis_key(v, "Choices", [])
             for c in choices:
                 c_next = get_zis_key(c, "Next")
-                if c_next: dot.edge(k, c_next, label="If Match", fontsize="10", fontcolor="#555555")
+                if c_next: dot.edge(k, c_next, label="If Match", fontsize="8", fontcolor="#555555")
             
             if get_zis_key(v, "End"): 
-                dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled", fixedsize="true")
+                dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.4", height="0.4", fixedsize="true", style="filled")
                 dot.edge(k, "END")
         
         st.graphviz_chart(dot, use_container_width=True) 
@@ -312,10 +309,12 @@ with t_code:
     if HAS_EDITOR:
         resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=600, key=dk, options={"showLineNumbers": True, "wrap": True})
         
+        # [SYNC LOGIC]
         if resp and resp.get("text") is not None:
             new_text = resp["text"]
             if new_text.strip(): 
                 st.session_state["editor_content"] = new_text
+                # Sync silent to update flow_json immediately on type/blur
                 try_sync_from_editor(False)
         
         c_btn, _ = st.columns([1,4])
@@ -328,8 +327,8 @@ with t_code:
                     st.error(f"❌ Erro de Sintaxe: {err}")
 
 with t_vis:
-    # [FIX] ALWAYS try to sync from the current editor content when entering this tab
-    # This ensures that even if 'Save' wasn't clicked, we try to use the latest typed code.
+    # [FIX] Force sync check when entering visual tab to ensure 'Default Image' isn't shown
+    # if the user just switched tabs without clicking save.
     ok, err = try_sync_from_editor(False)
     
     if not ok: st.error(f"⚠️ Invalid JSON: {err}")
@@ -340,10 +339,7 @@ with t_vis:
         keys = list(states.keys())
         with c1:
             st.subheader("Config")
-            # Using force_refresh keys in selectbox can help if it gets stuck, 
-            # but usually refreshing 'keys' list is enough.
             sel = st.selectbox("Step", ["(Select)"] + keys)
-            
             with st.expander("➕ Add Step"):
                 nn = st.text_input("Name"); nt = st.selectbox("Type", ["Action", "Choice", "Wait", "Pass", "Succeed", "Fail"])
                 if st.button("Add"): 
