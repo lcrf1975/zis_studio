@@ -122,14 +122,14 @@ def sanitize_step(step_data):
                 del step_data[k]
 
 # [CRITICAL] Sync Function
-def try_sync_from_editor(force_ui_update=False):
-    content = st.session_state.get("editor_content", "")
+def try_sync_from_editor(new_content=None, force_ui_update=False):
+    # Use provided content directly if available, otherwise fallback to session state
+    content = new_content if new_content is not None else st.session_state.get("editor_content", "")
     
-    # Se vazio, tenta recuperar do backup da memória
     if not content or not content.strip():
         if st.session_state.get("flow_json"):
             content = json.dumps(st.session_state["flow_json"], indent=2)
-            st.session_state["editor_content"] = content
+            if force_ui_update: st.session_state["editor_content"] = content
         else:
             return False, "Editor vazio."
     
@@ -144,8 +144,11 @@ def try_sync_from_editor(force_ui_update=False):
                     break
         
         norm_js = normalize_zis_keys(clean_flow_logic(js))
+        
+        # Update Memory
         st.session_state["flow_json"] = norm_js
         
+        # If valid, also update the raw text state to match processed version
         if force_ui_update:
             st.session_state["editor_content"] = json.dumps(norm_js, indent=2)
             st.session_state["editor_key"] += 1
@@ -179,9 +182,6 @@ if "editor_content" not in st.session_state:
 for key in ["zd_subdomain", "zd_email", "zd_token"]:
     if key not in st.session_state: st.session_state[key] = ""
 
-# ==========================================
-# 2. LOGIC ENGINE
-# ==========================================
 from zis_engine import ZISFlowEngine
 
 # ==========================================
@@ -202,8 +202,8 @@ def test_connection():
 def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
-        # [FIX] Reverted to ORIGINAL attributes for correct sizing
         dot = graphviz.Digraph(comment='ZIS Flow')
+        # [FIX] Standard sizing again
         dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
         dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12')
         dot.attr('edge', color='#888888') 
@@ -302,28 +302,50 @@ with t_imp:
 with t_code:
     dk = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
-        resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=600, key=dk, options={"showLineNumbers": True, "wrap": True})
+        # [FIX] Integrated Buttons are back!
+        # This solves the race condition because the event payload includes the text.
+        custom_buttons = [{
+            "name": "save_btn",
+            "feather": "Save",
+            "primary": True,
+            "hasText": True,
+            "alwaysOn": True,
+            "commands": ["submit"],
+            "style": {"bottom": "0.46rem", "right": "0.4rem"}
+        }]
+
+        resp = code_editor(
+            st.session_state.get("editor_content", ""), 
+            lang="json", 
+            height=600, 
+            key=dk, 
+            buttons=custom_buttons,
+            options={"showLineNumbers": True, "wrap": True, "autoClosingBrackets": True}
+        )
         
-        # [SYNC FIX] Aggressively capture text
-        if resp and resp.get("text") is not None:
-            new_text = resp["text"]
-            if new_text.strip(): 
-                st.session_state["editor_content"] = new_text
-                # Sync without UI update to prepare for tab switch
-                try_sync_from_editor(False)
-        
-        c_btn, _ = st.columns([1,4])
-        with c_btn:
-            if st.button("💾 Salvar e Atualizar Fluxo", type="primary"):
-                ok, err = try_sync_from_editor(False)
-                if ok: 
-                    st.toast("Salvo!", icon="✅"); time.sleep(0.1); force_refresh()
-                else: 
-                    st.error(f"❌ Erro de Sintaxe: {err}")
+        # Logic 1: Implicit update (typing)
+        if resp and resp.get("text") and resp.get("type") != "submit":
+             # We just save the text to session, but don't force JSON parsing aggressively until submit
+             st.session_state["editor_content"] = resp["text"]
+
+        # Logic 2: Explicit Save/Submit Click
+        # The 'save_btn' click sends type="submit" and the FULL current text
+        if resp and resp.get("type") == "submit":
+            # Use the text coming directly from the event
+            current_text = resp.get("text", "")
+            st.session_state["editor_content"] = current_text
+            
+            ok, err = try_sync_from_editor(new_content=current_text, force_ui_update=False)
+            if ok: 
+                st.toast("Salvo com Sucesso!", icon="✅")
+                time.sleep(0.2)
+                force_refresh()
+            else: 
+                st.error(f"❌ Erro de Sintaxe: {err}")
 
 with t_vis:
-    # [SYNC CHECK] Always check sync when entering tab
-    ok, err = try_sync_from_editor(False)
+    # Always check if flow_json is valid before rendering
+    ok, err = try_sync_from_editor(force_ui_update=False)
     
     if not ok: st.error(f"⚠️ Invalid JSON: {err}")
     else:
@@ -394,7 +416,7 @@ with t_vis:
                             if st.button("Del", key=f"cd_{i}_{sel}"): chs.pop(i); force_refresh()
                     if st.button("Add Rule", key=f"ar_{sel}"): chs.append({"Variable": "$.", "StringEquals": "", "Next": ""}); force_refresh()
 
-                if st.button("Save", type="primary", key=f"sv_{sel}"):
+                if st.button("Save Changes", type="primary", key=f"sv_{sel}"):
                     st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
                     st.success("Saved"); force_refresh()
 
