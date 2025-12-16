@@ -112,7 +112,7 @@ def sanitize_step(step_data):
         "resultpath": "ResultPath", "seconds": "Seconds"
     }
     existing_keys = list(step_data.keys())
-    # [FIX] Removido o 'v' do loop, pois existing_keys é uma lista de strings
+    # [FIXED] Iterating only keys to prevent unpacking error
     for k in existing_keys:
         k_lower = k.lower()
         if k_lower in keys_to_fix:
@@ -124,22 +124,14 @@ def sanitize_step(step_data):
 
 # [CRITICAL] Sync Function
 def try_sync_from_editor(new_content=None, force_ui_update=False):
-    # Use provided content directly if available, otherwise fallback to session state
     content = new_content if new_content is not None else st.session_state.get("editor_content", "")
-    
-    # [FIX] Check if content actually changed to avoid overwriting Flow with stale Editor content
     last_synced = st.session_state.get("last_synced_code", None)
-    
-    # If explicitly forcing update OR content differs from last sync
     should_process = force_ui_update or (content != last_synced)
     
-    if not should_process:
-        # If no change in code, we do nothing to protect Visual Designer changes
-        return True, None
+    if not should_process: return True, None
 
     if not content or not content.strip():
         if st.session_state.get("flow_json"):
-            # Restore content from JSON if editor is empty but memory exists
             content = json.dumps(st.session_state["flow_json"], indent=2)
             st.session_state["editor_content"] = content
             st.session_state["last_synced_code"] = content
@@ -149,29 +141,21 @@ def try_sync_from_editor(new_content=None, force_ui_update=False):
     try:
         cleaned_content = clean_json_string(content)
         js = json.loads(cleaned_content)
-        
         if "resources" in js:
             for v in js["resources"].values():
                 if v.get("type") == "ZIS::Flow": 
                     js = v["properties"]["definition"]
                     break
-        
         norm_js = normalize_zis_keys(clean_flow_logic(js))
-        
-        # Update Memory
         st.session_state["flow_json"] = norm_js
         st.session_state["last_synced_code"] = content
-        
-        # [FIX] Increment UI Version Key to force Visual Widgets to re-render
         st.session_state["ui_render_key"] += 1
         
-        # If valid, also update the raw text state to match processed version if forced
         if force_ui_update:
             formatted_json = json.dumps(norm_js, indent=2)
             st.session_state["editor_content"] = formatted_json
             st.session_state["last_synced_code"] = formatted_json
             st.session_state["editor_key"] += 1
-            
         return True, None
     except json.JSONDecodeError as e:
         return False, f"Erro JSON na linha {e.lineno}: {e.msg}"
@@ -195,7 +179,7 @@ st.markdown("""
 if "flow_json" not in st.session_state:
     st.session_state["flow_json"] = {"StartAt": "StartStep", "States": {"StartStep": {"Type": "Pass", "End": True}}}
 if "editor_key" not in st.session_state: st.session_state["editor_key"] = 0 
-if "ui_render_key" not in st.session_state: st.session_state["ui_render_key"] = 0 # [FIX] Version control for UI
+if "ui_render_key" not in st.session_state: st.session_state["ui_render_key"] = 0
 if "editor_content" not in st.session_state:
     content = json.dumps(st.session_state["flow_json"], indent=2)
     st.session_state["editor_content"] = content
@@ -225,10 +209,11 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
         dot = graphviz.Digraph(comment='ZIS Flow')
-        # [FIX] Layout Stability: removed penwidth variation on selection
-        # Using constant penwidth=1 for all nodes to prevent layout shifts in 'ortho' mode
+        # [FIX] Layout Stability: Explicit 'dot' layout and 'ortho' splines
+        dot.attr(layout='dot')
         dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
-        dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12', penwidth='1')
+        # [FIX] Force all nodes to have identical geometry attributes to prevent layout shifts
+        dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12', penwidth='1', margin='0.2')
         dot.attr('edge', color='#888888') 
         
         visited = set(highlight_path) if highlight_path else set()
@@ -238,21 +223,21 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
         if start: dot.edge("START", start)
 
         states = get_zis_key(flow_def, "States", {})
-        for k, v in states.items():
+        
+        # [CRITICAL FIX] Sort items to ensure deterministic graph generation order.
+        # This prevents Graphviz from calculating different orthogonal routes when dictionary order varies implicitly.
+        for k, v in sorted(states.items()):
             fill = "#e0e0e0"
-            color = "black" # Default border color
+            color = "black" 
             
-            # Logic for highlighting without changing geometry
             if k in visited: 
                 fill = "#C8E6C9"
             
             if k == selected_step: 
                 fill = "#FFF59D"
-                color = "#FBC02D" # Change border color instead of width for stability
-                # Do NOT increase penwidth here as it breaks 'ortho' layout stability
+                color = "#FBC02D" 
 
             sType = get_zis_key(v, "Type", "Unknown")
-            # Pass color explicitly
             dot.node(k, f"{k}\n({sType})", fillcolor=fill, color=color)
             
             next_step = get_zis_key(v, "Next")
@@ -357,28 +342,18 @@ with t_code:
             options={"showLineNumbers": True, "wrap": True, "autoClosingBrackets": True}
         )
         
-        # Logic 1: Implicit update (typing)
         if resp and resp.get("text") and resp.get("type") != "submit":
              st.session_state["editor_content"] = resp["text"]
 
-        # Logic 2: Explicit Save/Submit Click
         if resp and resp.get("type") == "submit":
             current_text = resp.get("text", "")
             st.session_state["editor_content"] = current_text
-            
             ok, err = try_sync_from_editor(new_content=current_text, force_ui_update=False)
-            if ok: 
-                # [FIX] Sem force_refresh() aqui para evitar o "piscar/loop"
-                st.toast("Salvo com Sucesso!", icon="✅")
-            else: 
-                st.error(f"❌ Erro de Sintaxe: {err}")
+            if ok: st.toast("Salvo com Sucesso!", icon="✅")
+            else: st.error(f"❌ Erro de Sintaxe: {err}")
 
 with t_vis:
-    # Always check if flow_json is valid before rendering
-    # This will only overwrite flow_json if code editor has new content
     ok, err = try_sync_from_editor(force_ui_update=False)
-    
-    # [FIX] Get current UI version key to append to widget keys
     ui_key = st.session_state["ui_render_key"]
     
     if not ok: st.error(f"⚠️ Invalid JSON: {err}")
@@ -389,14 +364,12 @@ with t_vis:
         keys = list(states.keys())
         with c1:
             st.subheader("Config")
-            # [FIX] Append ui_key to selection to reset if underlying data changes
             sel = st.selectbox("Step", ["(Select)"] + keys, key=f"step_selector_{ui_key}")
             
             with st.expander("➕ Add Step"):
                 nn = st.text_input("Name"); nt = st.selectbox("Type", ["Action", "Choice", "Wait", "Pass", "Succeed", "Fail"])
                 if st.button("Add"): 
                     st.session_state["flow_json"]["States"][nn] = {"Type": nt, "End": True} if nt == "Pass" else {"Type": nt}
-                    # Update sync state to prevent reversion
                     formatted = json.dumps(st.session_state["flow_json"], indent=2)
                     st.session_state["editor_content"] = formatted
                     st.session_state["last_synced_code"] = formatted
@@ -408,7 +381,6 @@ with t_vis:
                 s_dat = states[sel]; sanitize_step(s_dat); s_typ = get_zis_key(s_dat, "Type")
                 st.markdown(f"### {sel} `[{s_typ}]`")
                 if s_typ not in ["Succeed", "Fail", "Choice"]:
-                    # [FIX] Append ui_key to all input keys
                     is_end = st.checkbox("End Flow?", get_zis_key(s_dat, "End", False), key=f"end_{sel}_{ui_key}")
                     if is_end: s_dat["End"] = True; s_dat.pop("Next", None)
                     else:
@@ -422,8 +394,6 @@ with t_vis:
 
                 if s_typ == "Action":
                     s_dat["ActionName"] = st.text_input("Action", get_zis_key(s_dat, "ActionName", ""), key=f"act_{sel}_{ui_key}")
-                    
-                    # [FIX] Robust JSON handling for Parameters
                     current_params = get_zis_key(s_dat, "Parameters", {})
                     param_str = json.dumps(current_params, indent=2)
                     new_param_str = st.text_area("Params", param_str, key=f"prm_{sel}_{ui_key}")
@@ -431,7 +401,6 @@ with t_vis:
                         s_dat["Parameters"] = json.loads(new_param_str)
                     except:
                         st.caption("❌ Invalid JSON in Params")
-                        
                     s_dat["ResultPath"] = st.text_input("ResultPath (e.g. $.myVar)", get_zis_key(s_dat, "ResultPath", ""), key=f"res_{sel}_{ui_key}")
 
                 elif s_typ == "Choice":
@@ -442,37 +411,27 @@ with t_vis:
                     for i, ch in enumerate(chs):
                         with st.expander(f"Rule {i+1}"):
                             ch["Variable"] = st.text_input("Var", get_zis_key(ch, "Variable", ""), key=f"cv_{i}_{sel}_{ui_key}")
-                            
-                            # Operator Logic
                             ops = ["StringEquals", "BooleanEquals", "NumericEquals", "NumericGreaterThan"]
                             curr_op = "StringEquals"; curr_val = ""
                             for op in ops:
                                 if get_zis_key(ch, op) is not None: curr_op = op; curr_val = get_zis_key(ch, op); break
-                            
                             new_op = st.selectbox("Op", ops, index=ops.index(curr_op), key=f"cop_{i}_{sel}_{ui_key}")
                             new_val = st.text_input("Val", str(curr_val), key=f"cqv_{i}_{sel}_{ui_key}")
-                            
-                            # Clean old ops
                             for op in ops: ch.pop(op, None); ch.pop(op.lower(), None)
-                            
-                            # Set new op
                             real_val = new_val
                             if "Numeric" in new_op: 
                                 try: real_val = float(new_val)
                                 except: pass
                             ch[new_op] = real_val
-                            
                             ch["Next"] = st.selectbox("GoTo", [k for k in keys if k != sel], index=find_best_match_index([k for k in keys if k != sel], get_zis_key(ch, "Next")), key=f"cn_{i}_{sel}_{ui_key}")
                             if st.button("Del", key=f"cd_{i}_{sel}_{ui_key}"): chs.pop(i); force_refresh()
                     if st.button("Add Rule", key=f"ar_{sel}_{ui_key}"): chs.append({"Variable": "$.", "StringEquals": "", "Next": ""}); force_refresh()
 
                 if st.button("Save Changes", type="primary", key=f"sv_{sel}_{ui_key}"):
-                    # [FIX] When saving from UI, update the editor content AND the last_synced_code
-                    # This prevents the Code Editor from detecting a difference on next load and reverting
                     new_code = json.dumps(st.session_state["flow_json"], indent=2)
                     st.session_state["editor_content"] = new_code
                     st.session_state["last_synced_code"] = new_code
-                    st.session_state["editor_key"] += 1 # Force editor to reload with new text
+                    st.session_state["editor_key"] += 1
                     st.success("Saved"); force_refresh()
 
         with c2:
