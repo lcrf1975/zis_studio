@@ -112,7 +112,7 @@ def sanitize_step(step_data):
         "resultpath": "ResultPath", "seconds": "Seconds"
     }
     existing_keys = list(step_data.keys())
-    for k in existing_keys:
+    for k, v in existing_keys:
         k_lower = k.lower()
         if k_lower in keys_to_fix:
             target = keys_to_fix[k_lower]
@@ -224,9 +224,10 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
         dot = graphviz.Digraph(comment='ZIS Flow')
-        # [FIX] Standard sizing again
+        # [FIX] Layout Stability: removed penwidth variation on selection
+        # Using constant penwidth=1 for all nodes to prevent layout shifts in 'ortho' mode
         dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
-        dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12')
+        dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12', penwidth='1')
         dot.attr('edge', color='#888888') 
         
         visited = set(highlight_path) if highlight_path else set()
@@ -237,12 +238,21 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
 
         states = get_zis_key(flow_def, "States", {})
         for k, v in states.items():
-            fill = "#e0e0e0"; pen = "1"
-            if k in visited: fill = "#C8E6C9"; pen = "2"
-            if k == selected_step: fill = "#FFF59D"; pen = "3"
+            fill = "#e0e0e0"
+            color = "black" # Default border color
+            
+            # Logic for highlighting without changing geometry
+            if k in visited: 
+                fill = "#C8E6C9"
+            
+            if k == selected_step: 
+                fill = "#FFF59D"
+                color = "#FBC02D" # Change border color instead of width for stability
+                # Do NOT increase penwidth here as it breaks 'ortho' layout stability
 
             sType = get_zis_key(v, "Type", "Unknown")
-            dot.node(k, f"{k}\n({sType})", fillcolor=fill, penwidth=pen)
+            # Pass color explicitly
+            dot.node(k, f"{k}\n({sType})", fillcolor=fill, color=color)
             
             next_step = get_zis_key(v, "Next")
             if next_step: dot.edge(k, next_step)
@@ -326,15 +336,15 @@ with t_imp:
 with t_code:
     dk = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
-        # [FIX] Botão agora tem o nome correto "Salvar"
+        # [FIX] Button text changed to "Save" and position moved to top-right
         custom_buttons = [{
-            "name": "Salvar", 
+            "name": "Save", 
             "feather": "Save",
             "primary": True,
             "hasText": True,
             "alwaysOn": True,
             "commands": ["submit"],
-            "style": {"bottom": "0.46rem", "right": "0.4rem"}
+            "style": {"top": "0.46rem", "right": "0.4rem"}
         }]
 
         resp = code_editor(
