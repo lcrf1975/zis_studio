@@ -112,7 +112,8 @@ def sanitize_step(step_data):
         "resultpath": "ResultPath", "seconds": "Seconds"
     }
     existing_keys = list(step_data.keys())
-    for k, v in existing_keys:
+    # [FIX] Removido o 'v' do loop, pois existing_keys é uma lista de strings
+    for k in existing_keys:
         k_lower = k.lower()
         if k_lower in keys_to_fix:
             target = keys_to_fix[k_lower]
