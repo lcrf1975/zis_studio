@@ -205,18 +205,19 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [NEW] Static SVG Renderer with Native Highlighting
+# [NEW] Static SVG Renderer with 100% Stable Layout + CSS Injection
 def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: 
         return st.warning("Graphviz not installed. Please add 'graphviz' to requirements.txt")
 
     try:
-        # 1. Create Graph
+        # 1. Create Graph with FIXED Geometry Settings
+        # Using 'dot' engine is standard. 'polyline' splines for neat connectors.
         dot = graphviz.Digraph(format='svg')
         dot.attr(rankdir='TB', splines='polyline')
         dot.attr(nodesep='0.6', ranksep='0.7')
         
-        # Standard Node Attributes (Geometry)
+        # Standard Node Attributes
         dot.attr('node', shape='box', style='filled,rounded', 
                  fillcolor='#ECECFF', color='#939393', penwidth='2',
                  fontname='Arial', fontsize='12', margin='0.2')
@@ -227,32 +228,29 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
         start_step = get_zis_key(flow_def, "StartAt")
 
         # 2. Define Nodes (Strictly Sorted)
-        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", color="#388E3C", width="0.8", fontcolor="white")
-        dot.node("END", "End", shape="doublecircle", fillcolor="#333333", color="#000000", width="0.7", fontcolor="white")
+        # ID is critical for CSS targeting
+        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", color="#388E3C", width="0.8", fontcolor="white", id="node_START")
+        dot.node("END", "End", shape="doublecircle", fillcolor="#333333", color="#000000", width="0.7", fontcolor="white", id="node_END")
 
         sorted_items = sorted(states.items())
+        
         for k, v in sorted_items:
             sType = get_zis_key(v, "Type", "Unknown")
             label = f"{k}\n[{sType}]"
             
-            # Default style
+            # CRITICAL: We do NOT check for 'selected_step' here.
+            # The definition of the node must be IDENTICAL every time to guarantee identical layout.
             fill = "#ECECFF"
             color = "#939393"
-            penwidth = "2"
             
-            # Logic: Selection overrides Visited overrides Default
-            if k == selected_step:
-                fill = "#FFF59D"
-                color = "#FBC02D"
-                # IMPORTANT: Keep penwidth constant (2) to avoid layout jumps!
-                # Changing border width changes box size -> triggers layout recalculation
-                penwidth = "2" 
-            elif k in visited:
+            # We can allow 'visited' to change colors in Python since it's for debugger (not main editing),
+            # but even better would be CSS. For now, let's keep visited in python as it's separate from selection.
+            if k in visited: 
                 fill = "#C8E6C9"
                 color = "#4CAF50"
-
-            # Apply style directly to node definition
-            dot.node(k, label, fillcolor=fill, color=color, penwidth=penwidth)
+            
+            # Generate Node with ID matching the Step Name
+            dot.node(k, label, id=f"node_{k}", fillcolor=fill, color=color)
 
         # 3. Define Edges
         if start_step: dot.edge("START", start_step)
@@ -277,17 +275,39 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
             if is_explicit_end or is_terminal:
                 dot.edge(k, "END")
 
-        # 4. Generate SVG
+        # 4. Generate Raw SVG String
         svg_bytes = dot.pipe()
         svg_str = svg_bytes.decode('utf-8')
         
-        # Clean SVG for web embedding (remove xml decl, etc)
-        # This is often needed to make it render nicely in an HTML container
-        svg_str = svg_str.replace('<?xml version="1.0" encoding="UTF-8" standalone="no"?>', '')
-        svg_str = svg_str.replace('<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"', '')
-        svg_str = svg_str.replace('"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">', '')
+        # 5. Clean SVG for robust embedding
+        # Removing XML declarations prevents "white screen" or broken image issues in some browsers/iframes
+        svg_str = re.sub(r'<\?xml.*?>', '', svg_str)
+        svg_str = re.sub(r'<!DOCTYPE.*?>', '', svg_str)
+        
+        # 6. CSS INJECTION FOR SELECTION
+        # We inject a <style> block directly into the SVG to highlight the selected ID.
+        # This changes visuals WITHOUT touching the graph layout engine.
+        if selected_step:
+            # Graphviz generates group IDs like id="node_StepName"
+            # Inside that group, there's usually a path or polygon that forms the background.
+            style_block = f"""
+            <style>
+                #node_{selected_step} path, #node_{selected_step} polygon {{
+                    fill: #FFF59D !important;
+                    stroke: #FBC02D !important;
+                    stroke-width: 4px !important;
+                }}
+            </style>
+            """
+            # Insert style right after the opening <svg ...> tag
+            # We look for the first closing bracket '>' of the svg tag
+            match = re.search(r'<svg[^>]*>', svg_str)
+            if match:
+                insert_pos = match.end()
+                svg_str = svg_str[:insert_pos] + style_block + svg_str[insert_pos:]
 
-        # 5. Render
+        # 7. Render as HTML
+        # Using a div with overflow to handle large graphs gracefully
         st.markdown(f"""
             <div style="width: 100%; overflow-x: auto; text-align: center; padding: 10px; border: 1px solid #ddd; border-radius: 10px; background-color: white;">
                 {svg_str}
