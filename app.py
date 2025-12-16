@@ -191,7 +191,7 @@ for key in ["zd_subdomain", "zd_email", "zd_token"]:
 from zis_engine import ZISFlowEngine
 
 # ==========================================
-# 3. HELPERS & GRAPH RENDERER
+# 3. HELPERS & STATIC SVG RENDERER
 # ==========================================
 def get_auth():
     return HTTPBasicAuth(f"{st.session_state.zd_email}/token", st.session_state.zd_token) if st.session_state.zd_token else None
@@ -205,61 +205,46 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [NEW] Renderer: Direct Graphviz Chart
-# This uses Streamlit's native graphviz_chart which handles SVG/Canvas internally.
-# To prevent layout jumping, we manually set node attributes identically for both states.
-def render_flow_graphviz_native(flow_def, highlight_path=None, selected_step=None):
+# [NEW] Static SVG Renderer with Post-Process Highlighting
+# This is the ultimate fix for stability:
+# 1. Generate Graphviz geometry WITHOUT knowing selected step (Input is identical = Layout is identical)
+# 2. Inject CSS style block into SVG string to highlight specific ID (Output changes color only)
+def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: 
-        return st.warning("Graphviz not installed.")
+        return st.warning("Graphviz not installed. Please add 'graphviz' to requirements.txt")
 
     try:
-        dot = graphviz.Digraph(comment='ZIS Flow')
-        
-        # [FIX] Force Layout Stability
-        # Using 'dot' engine with 'polyline' or 'ortho' splines.
-        # 'nodesep' and 'ranksep' give breathing room.
-        dot.attr(layout='dot')
-        dot.attr(rankdir='TB', splines='polyline') 
+        # 1. Create Graph with FIXED Geometry Settings
+        dot = graphviz.Digraph(format='svg')
+        dot.attr(rankdir='TB', splines='polyline')
         dot.attr(nodesep='0.6', ranksep='0.7')
         
-        # Global Node Style - All nodes start equal
+        # Standard Node Attributes
         dot.attr('node', shape='box', style='filled,rounded', 
-                 fontname='Arial', fontsize='12', margin='0.2',
-                 penwidth='2.0') # Fixed penwidth is CRITICAL
-        
+                 fillcolor='#ECECFF', color='#939393', penwidth='2',
+                 fontname='Arial', fontsize='12', margin='0.2')
         dot.attr('edge', color='#666666', penwidth='1.5', arrowsize='0.8')
 
-        visited = set(highlight_path) if highlight_path else set()
         states = get_zis_key(flow_def, "States", {})
         start_step = get_zis_key(flow_def, "StartAt")
 
-        # Static Nodes
-        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", color="#388E3C", width="0.8", fontcolor="white", penwidth="2.0")
-        dot.node("END", "End", shape="doublecircle", fillcolor="#333333", color="#000000", width="0.7", fontcolor="white", penwidth="2.0")
+        # 2. Define Nodes (Strictly Sorted)
+        # ID attribute is crucial for CSS targeting later
+        # NOTE: We do NOT use 'selected_step' inside this loop to prevent layout changes
+        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", color="#388E3C", width="0.8", fontcolor="white", id="node_START")
+        dot.node("END", "End", shape="doublecircle", fillcolor="#333333", color="#000000", width="0.7", fontcolor="white", id="node_END")
 
-        # Sort for deterministic processing
         sorted_items = sorted(states.items())
-        
         for k, v in sorted_items:
             sType = get_zis_key(v, "Type", "Unknown")
             label = f"{k}\n[{sType}]"
             
-            # DEFAULT STYLE
-            fill = "#ECECFF"
-            color = "#939393"
-            
-            # HIGHLIGHT LOGIC - Changes COLORS only, never Geometry
-            if k == selected_step:
-                fill = "#FFF59D"
-                color = "#FBC02D"
-            elif k in visited:
-                fill = "#C8E6C9"
-                color = "#4CAF50"
-            
-            # Add node with forced geometry attributes
-            dot.node(k, label, fillcolor=fill, color=color)
+            # Generate Node with ID matching the Step Name
+            # We enforce a sanitized ID to be safe for CSS selectors
+            safe_id = re.sub(r'[^a-zA-Z0-9]', '_', k)
+            dot.node(k, label, id=f"node_{safe_id}")
 
-        # Edges
+        # 3. Define Edges
         if start_step: dot.edge("START", start_step)
 
         for k, v in sorted_items:
@@ -274,7 +259,7 @@ def render_flow_graphviz_native(flow_def, highlight_path=None, selected_step=Non
                 c_next = get_zis_key(c, "Next")
                 if c_next: dot.edge(k, c_next, label="Match")
             
-            # End logic
+            # End Connection Logic
             sType = get_zis_key(v, "Type", "Unknown")
             is_explicit_end = get_zis_key(v, "End", False)
             is_terminal = sType in ["Succeed", "Fail"]
@@ -282,11 +267,46 @@ def render_flow_graphviz_native(flow_def, highlight_path=None, selected_step=Non
             if is_explicit_end or is_terminal:
                 dot.edge(k, "END")
 
-        # Render using Streamlit's native wrapper (Robuster than raw SVG)
-        st.graphviz_chart(dot, use_container_width=True)
+        # 4. Generate Raw SVG String
+        svg_bytes = dot.pipe()
+        svg_str = svg_bytes.decode('utf-8')
+        
+        # 5. CSS INJECTION FOR SELECTION
+        # We inject a <style> block directly into the SVG to highlight the selected ID.
+        # This changes colors WITHOUT recalculating layout.
+        if selected_step:
+            safe_sel_id = re.sub(r'[^a-zA-Z0-9]', '_', selected_step)
+            # We target the polygon/path inside the group with the ID
+            # Usually Graphviz wraps node content in a group <g id="node_XXX" ...>
+            style_block = f"""
+            <style>
+                g[id="node_{safe_sel_id}"] path, 
+                g[id="node_{safe_sel_id}"] polygon,
+                g[id="node_{safe_sel_id}"] ellipse {{
+                    fill: #FFF59D !important;
+                    stroke: #FBC02D !important;
+                    stroke-width: 4px !important;
+                }}
+            </style>
+            """
+            # Insert style right after <svg ...> tag
+            # We regex search for the end of the svg opening tag
+            match = re.search(r'<svg[^>]*>', svg_str)
+            if match:
+                insert_idx = match.end()
+                svg_str = svg_str[:insert_idx] + style_block + svg_str[insert_idx:]
+
+        # 6. Render as HTML (Native SVG)
+        # Using a div with center alignment
+        st.markdown(f"""
+            <div style="width: 100%; overflow-x: auto; text-align: center; padding: 10px; border: 1px solid #ddd; border-radius: 10px; background-color: white;">
+                {svg_str}
+            </div>
+            """, unsafe_allow_html=True)
 
     except Exception as e:
-        st.error(f"Graph Error: {e}")
+        st.error(f"Render Error: {e}")
+        st.caption("Certifique-se de que 'graphviz' está instalado no requirements.txt")
 
 # ==========================================
 # 4. MAIN WORKSPACE
@@ -464,7 +484,7 @@ with t_vis:
                     st.success("Saved"); force_refresh()
 
         with c2:
-            render_flow_graphviz_native(curr, selected_step=sel if sel != "(Select)" else None)
+            render_flow_static_svg(curr, selected_step=sel if sel != "(Select)" else None)
 
 with t_dep:
     if not st.session_state.get("is_connected"): st.warning("Connect in Settings first.")
@@ -512,4 +532,4 @@ with t_deb:
     with col_graph:
         st.markdown("### Trace")
         current_path = st.session_state["debug_res"][2] if "debug_res" in st.session_state else None
-        render_flow_graphviz_native(st.session_state["flow_json"], current_path)
+        render_flow_static_svg(st.session_state["flow_json"], current_path)
