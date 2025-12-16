@@ -210,7 +210,7 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [NEW] CACHED SVG RENDERER WITH RESPONSIVE SCALING
+# [NEW] CACHED SVG RENDERER WITH SCROLLING SUPPORT
 def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: 
         return st.warning("Graphviz not installed. Please add 'graphviz' to requirements.txt")
@@ -221,14 +221,14 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     if st.session_state["cached_svg"] is None or st.session_state["cached_svg_version"] != current_ui_version:
         try:
             dot = graphviz.Digraph(format='svg')
-            # Compact layout settings
+            # Settings for better spacing
             dot.attr(rankdir='TB', splines='polyline', compound='true')
-            dot.attr(nodesep='0.5', ranksep='0.6') 
+            dot.attr(nodesep='0.6', ranksep='0.8') 
             
             # Use strict attributes for all nodes
             dot.attr('node', shape='box', style='filled,rounded', 
                      fillcolor='#ECECFF', color='#939393', penwidth='2',
-                     fontname='Arial', fontsize='11', margin='0.15')
+                     fontname='Arial', fontsize='12', margin='0.2')
             dot.attr('edge', color='#666666', penwidth='1.5', arrowsize='0.7')
 
             states = get_zis_key(flow_def, "States", {})
@@ -243,7 +243,6 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
             
             for k, v in sorted_items:
                 sType = get_zis_key(v, "Type", "Unknown")
-                # Truncate long names slightly to prevent massive boxes
                 display_k = k if len(k) < 25 else k[:23] + ".."
                 label = f"{display_k}\n[{sType}]"
                 # Use a strictly alphanumeric ID for CSS targeting
@@ -273,12 +272,12 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
             svg_bytes = dot.pipe()
             svg_str = svg_bytes.decode('utf-8')
             
-            # [FIX] RESPONSIVENESS HACK
-            # Remove hardcoded width/height from Graphviz output so it scales with CSS
+            # [FIX] RESPONSIVENESS: Remove fixed sizes to allow scaling + scrolling
             svg_str = re.sub(r'<\?xml.*?>', '', svg_str)
             svg_str = re.sub(r'<!DOCTYPE.*?>', '', svg_str)
-            svg_str = re.sub(r'width="[\d.]+(pt|in|px)?"', 'width="100%"', svg_str, count=1)
-            svg_str = re.sub(r'height="[\d.]+(pt|in|px)?"', 'height="100%"', svg_str, count=1)
+            # We completely remove width and height attributes so CSS determines size
+            svg_str = re.sub(r'width="[^"]*"', '', svg_str, count=1)
+            svg_str = re.sub(r'height="[^"]*"', '', svg_str, count=1)
             
             st.session_state["cached_svg"] = svg_str
             st.session_state["cached_svg_version"] = current_ui_version
@@ -290,10 +289,8 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     # 2. RETRIEVE CACHED SVG
     final_svg = st.session_state["cached_svg"]
     
-    # 3. GENERATE CSS FOR HIGHLIGHTS (Applied over the static SVG)
+    # 3. GENERATE CSS FOR HIGHLIGHTS
     css_rules = []
-    
-    # Selection Style
     if selected_step:
         safe_sel_id = re.sub(r'[^a-zA-Z0-9]', '_', selected_step)
         css_rules.append(f"""
@@ -302,10 +299,9 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
                 stroke: #FBC02D !important;
                 stroke-width: 3px !important;
             }}
-            #node_{safe_sel_id} text {{ font-weight: bold; }}
+            #node_{safe_sel_id} text {{ font-weight: bold; font-size: 14px; }}
         """)
         
-    # Debugger Path Style
     if highlight_path:
         for step in highlight_path:
             if step == selected_step: continue
@@ -317,26 +313,30 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
                 }}
             """)
 
-    # 4. RENDER IN RESPONSIVE IFRAME
-    # We use a container that centers the SVG and limits its max size to viewport
+    # 4. RENDER IN SCROLLABLE CONTAINER
+    # [FIX] CSS changes: 
+    # - .svg-wrapper now has overflow: auto to enable scrolling
+    # - svg now has width: 100% and height: auto to fill width and grow vertically without shrinking
     full_html = f"""
     <!DOCTYPE html>
     <html>
     <head>
     <style>
-        body {{ margin: 0; padding: 0; display: flex; justify-content: center; background: transparent; }}
+        body {{ margin: 0; padding: 0; background: transparent; }}
         .svg-wrapper {{
-            width: 100%;
+            width: 100vw;
             height: 98vh;
             display: flex;
-            justify-content: center;
-            align-items: flex-start;
+            justify-content: center; /* Center horizontally if smaller than screen */
+            align-items: flex-start; /* Align top */
+            overflow: auto; /* ENABLE SCROLL BARS */
+            padding: 20px;
+            box-sizing: border-box;
         }}
         svg {{
-            width: auto;
-            height: auto;
-            max-width: 100%;
-            max-height: 100%;
+            width: 100%;      /* Fill container width */
+            height: auto;     /* Maintain aspect ratio - DO NOT FORCE 100% HEIGHT */
+            min-width: 600px; /* Ensure it doesn't get too tiny on mobile if complex */
         }}
         { "".join(css_rules) }
     </style>
@@ -349,8 +349,7 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     </html>
     """
     
-    # Set a fixed comfortable height for the Streamlit component
-    components.html(full_html, height=700, scrolling=False)
+    components.html(full_html, height=750, scrolling=True)
 
 # ==========================================
 # 4. MAIN WORKSPACE
@@ -379,19 +378,49 @@ with t_imp:
     else:
         if st.button("🚀 Start Deep Scan"):
             try:
-                resp = requests.get(f"{get_base_url()}/integrations", auth=get_auth())
-                if resp.status_code == 200:
-                    ints = resp.json().get("integrations", [])
-                    res = []
-                    for i in ints:
-                        nm = i["name"]
-                        b_resp = requests.get(f"{get_base_url()}/{nm}/bundles", auth=get_auth())
-                        if b_resp.status_code == 200:
-                            for b in b_resp.json().get("bundles", []):
-                                res.append({"int": nm, "bun": b["name"], "uuid": b.get("uuid", "")})
-                    st.session_state["scan_results"] = res
-                    if res: st.success(f"Found {len(res)} bundles.")
-                    else: st.warning("No bundles found.")
+                # [FIX] Enhanced Progress Bar Logic
+                # Use st.status for better UX during long operations
+                with st.status("🔍 Scanning Zendesk Integrations...", expanded=True) as status:
+                    
+                    status.write("Fetching Integrations list...")
+                    resp = requests.get(f"{get_base_url()}/integrations", auth=get_auth())
+                    
+                    if resp.status_code == 200:
+                        ints = resp.json().get("integrations", [])
+                        total_ints = len(ints)
+                        status.write(f"Found {total_ints} integrations. Scanning bundles...")
+                        
+                        # Create progress bar inside the status container
+                        progress_bar = status.progress(0)
+                        
+                        res = []
+                        for idx, i in enumerate(ints):
+                            nm = i["name"]
+                            # Update progress
+                            progress = (idx + 1) / total_ints
+                            progress_bar.progress(progress)
+                            
+                            try:
+                                b_resp = requests.get(f"{get_base_url()}/{nm}/bundles", auth=get_auth())
+                                if b_resp.status_code == 200:
+                                    bundles = b_resp.json().get("bundles", [])
+                                    for b in bundles:
+                                        res.append({"int": nm, "bun": b["name"], "uuid": b.get("uuid", "")})
+                            except:
+                                pass # Skip faulty integrations silently to keep scanning
+                        
+                        st.session_state["scan_results"] = res
+                        
+                        if res: 
+                            status.update(label=f"✅ Scan Complete! Found {len(res)} bundles.", state="complete", expanded=False)
+                            st.success(f"Found {len(res)} bundles.")
+                        else: 
+                            status.update(label="⚠️ Scan Complete. No bundles found.", state="complete", expanded=False)
+                            st.warning("No bundles found.")
+                    else:
+                        status.update(label="❌ API Error", state="error")
+                        st.error(f"API Error: {resp.status_code}")
+                        
             except Exception as e: st.error(str(e))
 
         if "scan_results" in st.session_state:
