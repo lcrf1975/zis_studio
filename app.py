@@ -29,6 +29,10 @@ def force_refresh():
 
 # [HELPER] Remove Comments for JSON parsing
 def remove_comments(json_str):
+    if not isinstance(json_str, str): return ""
+    # Remove non-breaking spaces often caused by copy-pasting
+    json_str = json_str.replace("\u00a0", " ")
+    
     pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
     def replace(match):
         if match.group(1): return match.group(1) 
@@ -137,11 +141,11 @@ def sanitize_step(step_data):
 def try_sync_from_editor(force_ui_update=False):
     """
     Attempts to parse the current editor string content into the flow_json object.
-    Returns (True, parsed_json) if successful, (False, None) if invalid JSON.
+    Returns (True, parsed_json) if successful, (False, error_message) if invalid JSON.
     """
     content = st.session_state.get("editor_content", "")
     if not content:
-        return False, None
+        return False, "Editor vazio"
     
     try:
         js = json.loads(remove_comments(content))
@@ -156,15 +160,14 @@ def try_sync_from_editor(force_ui_update=False):
         norm_js = normalize_zis_keys(clean_flow_logic(js))
         st.session_state["flow_json"] = norm_js
         
-        # Only update the editor content variable if we explicitly want to force a UI refresh (e.g. format code)
-        # Otherwise, we trust the editor has the latest text
+        # Only update the editor content variable if we explicitly want to force a UI refresh
         if force_ui_update:
             st.session_state["editor_content"] = json.dumps(norm_js, indent=2)
             st.session_state["editor_key"] += 1
             
-        return True, norm_js
+        return True, None
     except Exception as e:
-        return False, None
+        return False, str(e)
 
 # ==========================================
 # 1. THEME & CONFIG
@@ -352,38 +355,45 @@ with t_imp:
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
-        # Code Editor Instance
-        resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, key=dynamic_key)
+        # [FIX] Added explicit options to force line numbers and wrapping
+        editor_options = {
+            "showLineNumbers": True,
+            "showGutter": True,
+            "wrap": True,
+            "autoClosingBrackets": True
+        }
+
+        resp = code_editor(
+            st.session_state.get("editor_content", ""), 
+            lang="json", 
+            height=600, 
+            key=dynamic_key,
+            options=editor_options
+        )
         
-        # [CRITICAL FIX] Capture text changes immediately if they exist in the response
+        # Capture text changes immediately
         if resp and resp.get("text") is not None:
             st.session_state["editor_content"] = resp["text"]
-            # Attempt silent sync so state is ready for the button click
             try_sync_from_editor(force_ui_update=False)
 
         col_btn_save, _ = st.columns([1, 4])
         with col_btn_save:
             if st.button("💾 Salvar e Atualizar Fluxo", type="primary", key="btn_manual_save"):
-                # 1. Sync Logic
-                # We use force_ui_update=False to avoid re-formatting/rewriting the user's code
-                # which would cause the cursor to jump or the editor to reset.
-                is_valid, _ = try_sync_from_editor(force_ui_update=False)
+                is_valid, error_msg = try_sync_from_editor(force_ui_update=False)
                 
                 if is_valid:
                     st.toast("Sucesso! O Visual Designer foi atualizado.", icon="✅")
-                    # 2. Force Refresh: This ensures the 'Visual Designer' tab redraws with new data.
-                    # We add a tiny sleep to ensure the session state propagation completes.
                     time.sleep(0.1) 
                     force_refresh()
                 else:
-                    st.error("❌ Erro de Sintaxe JSON. Verifique seu código.")
+                    st.error(f"❌ Erro de Sintaxe JSON: {error_msg}")
 
 # --- TAB 4: VISUAL DESIGNER ---
 with t_vis:
-    sync_ok, _ = try_sync_from_editor(force_ui_update=False)
+    sync_ok, error_msg = try_sync_from_editor(force_ui_update=False)
     
     if not sync_ok:
-        st.error("⚠️ **Syntax Error:** The code in the 'Code Editor' tab is invalid JSON. Please fix it before using the Visual Designer.")
+        st.error(f"⚠️ **Syntax Error:** The code in the 'Code Editor' tab is invalid JSON.\n\nError Details: `{error_msg}`")
     else:
         st.caption(f"Visualização gerada em: {time.strftime('%H:%M:%S')}")
         c1, c2 = st.columns([1, 2])
