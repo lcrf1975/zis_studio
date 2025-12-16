@@ -105,7 +105,7 @@ def clean_flow_logic(flow_data):
         if key in clean: del clean[key]
     return clean
 
-# [HELPER] Sanitizar Dados do Passo
+# [NEW] Sanitize Step Data
 def sanitize_step(step_data):
     keys_to_fix = {
         "next": "Next", "actionname": "ActionName", 
@@ -123,7 +123,7 @@ def sanitize_step(step_data):
                 if target not in step_data: step_data[target] = val
                 del step_data[k]
 
-# [CRÍTICO] Sincronização Editor -> UI
+# [CRITICAL] Sync Function
 def try_sync_from_editor(new_content=None, force_ui_update=False):
     content = new_content if new_content is not None else st.session_state.get("editor_content", "")
     last_synced = st.session_state.get("last_synced_code", None)
@@ -199,7 +199,7 @@ for key in ["zd_subdomain", "zd_email", "zd_token"]:
 from zis_engine import ZISFlowEngine
 
 # ==========================================
-# 3. HELPERS & RENDERIZADOR SVG ESTÁTICO (DO ARQUIVO BOM)
+# 3. HELPERS & STATIC SVG RENDERER
 # ==========================================
 def get_auth():
     return HTTPBasicAuth(f"{st.session_state.zd_email}/token", st.session_state.zd_token) if st.session_state.zd_token else None
@@ -213,7 +213,7 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [CRÍTICO] Renderizador SVG com Cache para Estabilidade
+# [NEW] CACHED SVG RENDERER - NATURAL SIZE
 def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: 
         return st.warning("Graphviz not installed. Please add 'graphviz' to requirements.txt")
@@ -277,7 +277,6 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
             
             # [FIX] RESPONSIVENESS:
             # We clean XML headers but we DO NOT remove width/height attributes.
-            # Graphviz calculates the perfect size for readability.
             svg_str = re.sub(r'<\?xml.*?>', '', svg_str)
             svg_str = re.sub(r'<!DOCTYPE.*?>', '', svg_str)
             
@@ -295,13 +294,13 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     css_rules = []
     if selected_step:
         safe_sel_id = re.sub(r'[^a-zA-Z0-9]', '_', selected_step)
+        # [FIX] Removed text font-weight: bold rule
         css_rules.append(f"""
             #node_{safe_sel_id} polygon, #node_{safe_sel_id} path, #node_{safe_sel_id} ellipse {{
                 fill: #FFF59D !important;
                 stroke: #FBC02D !important;
                 stroke-width: 3px !important;
             }}
-            #node_{safe_sel_id} text {{ font-weight: bold; font-size: 14px; }}
         """)
         
     if highlight_path:
@@ -344,7 +343,7 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     </html>
     """
     
-    # Estimate height generously
+    # Estimate height generously so Streamlit allocates space. 
     est_height = 200 + (len(get_zis_key(flow_def, "States", {})) * 120)
     components.html(full_html, height=est_height, scrolling=True)
 
@@ -375,6 +374,8 @@ with t_imp:
     else:
         if st.button("🚀 Start Deep Scan"):
             try:
+                # [FIX] Enhanced Progress Bar Logic
+                # Use st.status for better UX during long operations
                 with st.status("🔍 Scanning Zendesk Integrations...", expanded=True) as status:
                     
                     status.write("Fetching Integrations list...")
@@ -390,24 +391,31 @@ with t_imp:
                         res = []
                         for idx, i in enumerate(ints):
                             nm = i["name"]
+                            # Update progress
                             progress = (idx + 1) / total_ints
                             progress_bar.progress(progress)
+                            
                             try:
                                 b_resp = requests.get(f"{get_base_url()}/{nm}/bundles", auth=get_auth())
                                 if b_resp.status_code == 200:
-                                    for b in b_resp.json().get("bundles", []):
+                                    bundles = b_resp.json().get("bundles", [])
+                                    for b in bundles:
                                         res.append({"int": nm, "bun": b["name"], "uuid": b.get("uuid", "")})
                             except:
-                                pass 
+                                pass # Skip faulty integrations silently to keep scanning
                         
                         st.session_state["scan_results"] = res
+                        
                         if res: 
-                            status.update(label=f"✅ Found {len(res)} bundles!", state="complete", expanded=False)
+                            status.update(label=f"✅ Scan Complete! Found {len(res)} bundles.", state="complete", expanded=False)
                             st.success(f"Found {len(res)} bundles.")
                         else: 
-                            status.update(label="⚠️ No bundles found.", state="complete", expanded=False)
+                            status.update(label="⚠️ Scan Complete. No bundles found.", state="complete", expanded=False)
                             st.warning("No bundles found.")
-                    else: st.error(f"API Error: {resp.status_code}")
+                    else:
+                        status.update(label="❌ API Error", state="error")
+                        st.error(f"API Error: {resp.status_code}")
+                        
             except Exception as e: st.error(str(e))
 
         if "scan_results" in st.session_state:
