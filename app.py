@@ -215,20 +215,17 @@ def test_connection():
     except Exception as e: return False, f"{str(e)}"
 
 # [CRÍTICO] Renderizador SVG Direto e Seguro
-# Removemos o cache complexo e a injeção de CSS que estava quebrando.
-# A estabilidade é garantida mantendo a geometria idêntica (penwidth, shape) entre estados.
 def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: 
         return st.warning("Graphviz não instalado. Adicione 'graphviz' ao requirements.txt")
 
     try:
         dot = graphviz.Digraph(format='svg')
-        # Configurações de layout compactas
+        # Configurações de layout
         dot.attr(rankdir='TB', splines='polyline', compound='true')
         dot.attr(nodesep='0.6', ranksep='0.8') 
         
-        # Estilo padrão dos nós
-        # IMPORTANT: 'penwidth' fixo em 2.0 para evitar recálculo de tamanho ao selecionar
+        # Estilo padrão dos nós (Geometria fixa)
         dot.attr('node', shape='box', style='filled,rounded', 
                  fontname='Arial', fontsize='12', margin='0.2',
                  penwidth='2.0')
@@ -246,7 +243,7 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
         
         for k, v in sorted_items:
             sType = get_zis_key(v, "Type", "Unknown")
-            # Truncar nomes muito longos
+            # Truncar nomes muito longos para visualização
             display_k = k if len(k) < 25 else k[:23] + ".."
             label = f"{display_k}\n[{sType}]"
             
@@ -291,14 +288,18 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
         svg_bytes = dot.pipe()
         svg_str = svg_bytes.decode('utf-8')
         
-        # Limpeza XML para garantir exibição
+        # [FIX] CORREÇÃO DO TAMANHO "GIGANTE"
+        # 1. Limpamos os cabeçalhos XML que causam problemas em iframes
         svg_str = re.sub(r'<\?xml.*?>', '', svg_str)
         svg_str = re.sub(r'<!DOCTYPE.*?>', '', svg_str)
-        # Remover dimensões fixas para permitir que o CSS controle o tamanho
-        svg_str = re.sub(r'width="[^"]*"', '', svg_str, count=1)
-        svg_str = re.sub(r'height="[^"]*"', '', svg_str, count=1)
         
-        # Renderização em Iframe Isolado para evitar conflitos de estilo
+        # 2. NÃO REMOVEMOS mais os atributos width/height gerados pelo Graphviz.
+        # Eles definem o tamanho intrínseco correto para que as fontes fiquem legíveis.
+        # Se removermos, o navegador tenta esticar para 100% da largura, criando o efeito gigante.
+        
+        # 3. Renderização em Container com Rolagem
+        # Usamos max-width: 100% para garantir que não ultrapasse a tela, 
+        # mas width: auto para respeitar o tamanho natural se for menor.
         full_html = f"""
         <!DOCTYPE html>
         <html>
@@ -310,13 +311,14 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
                 display: flex;
                 justify-content: center;
                 align-items: flex-start;
-                padding: 10px;
+                padding: 20px;
                 box-sizing: border-box;
+                overflow: auto; /* Permite rolagem se a imagem for maior que o iframe */
             }}
             svg {{
-                max-width: 100%;
-                height: auto;
-                display: block;
+                max-width: 100%; /* Encolhe se for mais largo que a tela */
+                height: auto;    /* Mantém a proporção */
+                /* width: auto;  <-- Implícito, usa o tamanho do atributo do SVG */
             }}
         </style>
         </head>
@@ -328,9 +330,11 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
         </html>
         """
         
-        # Altura dinâmica estimada
-        est_height = 200 + (len(states) * 100)
-        components.html(full_html, height=est_height, scrolling=False)
+        # Altura dinâmica estimada para o iframe do Streamlit
+        # Isso garante que a barra de rolagem da página funcione bem
+        est_height = 300 + (len(states) * 100)
+        # Limitamos a altura máxima inicial para não "empurrar" a tela demais, se preferir
+        components.html(full_html, height=est_height, scrolling=True)
             
     except Exception as e:
         st.error(f"Render Error: {e}")
