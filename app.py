@@ -302,10 +302,9 @@ with t_imp:
 with t_code:
     dk = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
-        # [FIX] Integrated Buttons are back!
-        # This solves the race condition because the event payload includes the text.
+        # [FIX] Botão agora tem o nome correto "Salvar"
         custom_buttons = [{
-            "name": "save_btn",
+            "name": "Salvar", 
             "feather": "Save",
             "primary": True,
             "hasText": True,
@@ -325,21 +324,17 @@ with t_code:
         
         # Logic 1: Implicit update (typing)
         if resp and resp.get("text") and resp.get("type") != "submit":
-             # We just save the text to session, but don't force JSON parsing aggressively until submit
              st.session_state["editor_content"] = resp["text"]
 
         # Logic 2: Explicit Save/Submit Click
-        # The 'save_btn' click sends type="submit" and the FULL current text
         if resp and resp.get("type") == "submit":
-            # Use the text coming directly from the event
             current_text = resp.get("text", "")
             st.session_state["editor_content"] = current_text
             
             ok, err = try_sync_from_editor(new_content=current_text, force_ui_update=False)
             if ok: 
+                # [FIX] Sem force_refresh() aqui para evitar o "piscar/loop"
                 st.toast("Salvo com Sucesso!", icon="✅")
-                time.sleep(0.2)
-                force_refresh()
             else: 
                 st.error(f"❌ Erro de Sintaxe: {err}")
 
