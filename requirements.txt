@@ -2,4 +2,3 @@ streamlit
 requests
 jsonpath-ng
 streamlit-code-editor
-graphviz
