@@ -35,7 +35,6 @@ def clean_json_string(json_str):
     json_str = re.sub(r'\s*```$', '', json_str)
     json_str = json_str.replace("\u00a0", " ")
     
-    # Remove C-style comments
     pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
     def replace(match):
         if match.group(1): return match.group(1) 
@@ -126,13 +125,13 @@ def sanitize_step(step_data):
 def try_sync_from_editor(force_ui_update=False):
     content = st.session_state.get("editor_content", "")
     
-    # Backup recovery
+    # Se vazio, tenta recuperar do backup da memória
     if not content or not content.strip():
         if st.session_state.get("flow_json"):
             content = json.dumps(st.session_state["flow_json"], indent=2)
             st.session_state["editor_content"] = content
         else:
-            return False, "Editor vazio e sem backup"
+            return False, "Editor vazio."
     
     try:
         cleaned_content = clean_json_string(content)
@@ -180,6 +179,9 @@ if "editor_content" not in st.session_state:
 for key in ["zd_subdomain", "zd_email", "zd_token"]:
     if key not in st.session_state: st.session_state[key] = ""
 
+# ==========================================
+# 2. LOGIC ENGINE
+# ==========================================
 from zis_engine import ZISFlowEngine
 
 # ==========================================
@@ -200,50 +202,43 @@ def test_connection():
 def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
-        # [FIX] Graph Optimization Attributes for compactness
+        # [FIX] Reverted to ORIGINAL attributes for correct sizing
         dot = graphviz.Digraph(comment='ZIS Flow')
-        
-        # 'dpi': 72 keeps it standard screen res (preventing huge retina scaling)
-        # 'nodesep': Reduces space between nodes
-        # 'ranksep': Reduces space between levels
-        dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent', dpi='72', nodesep='0.4', ranksep='0.4')
-        dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='10', margin='0.1', height='0.4')
-        dot.attr('edge', color='#666666', arrowsize='0.6') 
+        dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
+        dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12')
+        dot.attr('edge', color='#888888') 
         
         visited = set(highlight_path) if highlight_path else set()
         start = get_zis_key(flow_def, "StartAt")
         
-        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.5", height="0.5", fixedsize="true", style="filled")
+        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled")
         if start: dot.edge("START", start)
 
         states = get_zis_key(flow_def, "States", {})
         for k, v in states.items():
-            fill = "#ffffff"; pen = "1"; color = "#999999"
-            if k in visited: fill = "#C8E6C9"; pen = "2"; color="#4CAF50"
-            if k == selected_step: fill = "#FFF59D"; pen = "3"; color="#FBC02D"
+            fill = "#e0e0e0"; pen = "1"
+            if k in visited: fill = "#C8E6C9"; pen = "2"
+            if k == selected_step: fill = "#FFF59D"; pen = "3"
 
             sType = get_zis_key(v, "Type", "Unknown")
-            
-            # Simplified Label
-            label_html = f"<{k}<BR/><FONT POINT-SIZE='8' COLOR='#555555'>{sType}</FONT>>"
-            dot.node(k, label_html, fillcolor=fill, color=color, penwidth=pen)
+            dot.node(k, f"{k}\n({sType})", fillcolor=fill, penwidth=pen)
             
             next_step = get_zis_key(v, "Next")
             if next_step: dot.edge(k, next_step)
             
             default_step = get_zis_key(v, "Default")
-            if default_step: dot.edge(k, default_step, label="Default", fontsize="8", fontcolor="#555555")
+            if default_step: dot.edge(k, default_step, label="Default")
             
             choices = get_zis_key(v, "Choices", [])
             for c in choices:
                 c_next = get_zis_key(c, "Next")
-                if c_next: dot.edge(k, c_next, label="If Match", fontsize="8", fontcolor="#555555")
+                if c_next: dot.edge(k, c_next, label="If Match")
             
             if get_zis_key(v, "End"): 
-                dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.4", height="0.4", fixedsize="true", style="filled")
+                dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
                 dot.edge(k, "END")
         
-        st.graphviz_chart(dot, use_container_width=True) 
+        st.graphviz_chart(dot) 
     except Exception as e: st.warning(f"Graph Error: {e}")
 
 # ==========================================
@@ -309,12 +304,12 @@ with t_code:
     if HAS_EDITOR:
         resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=600, key=dk, options={"showLineNumbers": True, "wrap": True})
         
-        # [SYNC LOGIC]
+        # [SYNC FIX] Aggressively capture text
         if resp and resp.get("text") is not None:
             new_text = resp["text"]
             if new_text.strip(): 
                 st.session_state["editor_content"] = new_text
-                # Sync silent to update flow_json immediately on type/blur
+                # Sync without UI update to prepare for tab switch
                 try_sync_from_editor(False)
         
         c_btn, _ = st.columns([1,4])
@@ -327,8 +322,7 @@ with t_code:
                     st.error(f"❌ Erro de Sintaxe: {err}")
 
 with t_vis:
-    # [FIX] Force sync check when entering visual tab to ensure 'Default Image' isn't shown
-    # if the user just switched tabs without clicking save.
+    # [SYNC CHECK] Always check sync when entering tab
     ok, err = try_sync_from_editor(False)
     
     if not ok: st.error(f"⚠️ Invalid JSON: {err}")
