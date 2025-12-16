@@ -200,9 +200,10 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [NEW] Mermaid.js Renderer
+# [NEW] Mermaid.js Renderer with Strict Ordering
 def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
     # 1. Start Construction
+    # 'flowchart TB' is standard Top-Bottom. 
     mermaid_lines = ["flowchart TB"]
     
     # 2. Styles
@@ -222,7 +223,8 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
     # End Node
     mermaid_lines.append("END(((End))):::terminal")
 
-    # Sort states for deterministic layout
+    # [CRITICAL FIX] Always sort items to ensure string generation is 100% deterministic
+    # This prevents the layout engine from recalculating positions just because dict order changed
     sorted_items = sorted(states.items())
     
     for k, v in sorted_items:
@@ -269,8 +271,11 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
         if is_explicit_end or is_terminal:
             mermaid_lines.append(f"{k} --> END")
 
-    # 5. Apply Classes (Last step to ensure structure is fixed)
-    for k in states.keys():
+    # 5. Apply Classes
+    # [CRITICAL FIX] Iterate over SORTED keys here too. 
+    # If we iterate over unsorted dictionary, the resulting string changes hash/order, causing Mermaid re-render jump.
+    sorted_keys = sorted(states.keys())
+    for k in sorted_keys:
         if k == selected_step:
             mermaid_lines.append(f"class {k} selected;")
         elif k in visited:
@@ -279,14 +284,23 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
     mermaid_code = "\n".join(mermaid_lines)
     
     # 6. Render HTML
+    # Added 'flowchart: { curve: 'linear' }' to force straight lines which are more stable in layout than bezier
     html_code = f"""
     <!DOCTYPE html>
     <html>
     <head>
     <script type="module">
         import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({{ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' }});
+        mermaid.initialize({{ 
+            startOnLoad: true, 
+            theme: 'neutral', 
+            securityLevel: 'loose',
+            flowchart: {{ curve: 'linear', htmlLabels: true }} 
+        }});
     </script>
+    <style>
+        .mermaid {{ display: flex; justify-content: center; }}
+    </style>
     </head>
     <body>
         <div class="mermaid">
