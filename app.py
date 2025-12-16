@@ -3,12 +3,13 @@ import json
 import requests
 import time
 import re
+import base64
 import streamlit.components.v1 as components
 from requests.auth import HTTPBasicAuth
 from jsonpath_ng import parse 
 
 # ==========================================
-# 0. CONFIGURAÇÃO DO SISTEMA
+# 0. SYSTEM SETUP
 # ==========================================
 try:
     import graphviz
@@ -28,16 +29,14 @@ def force_refresh():
     else:
         st.experimental_rerun()
 
-# [HELPER] Limpeza Robusta de JSON
+# [HELPER] Robust JSON Cleaner
 def clean_json_string(json_str):
     if not isinstance(json_str, str): return ""
     json_str = json_str.strip()
-    # Remove blocos de código markdown se existirem
     json_str = re.sub(r'^```[a-zA-Z]*\s*', '', json_str)
     json_str = re.sub(r'\s*```$', '', json_str)
     json_str = json_str.replace("\u00a0", " ")
     
-    # Remove comentários estilo C/JS (não permitidos em JSON padrão)
     pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
     def replace(match):
         if match.group(1): return match.group(1) 
@@ -47,7 +46,7 @@ def clean_json_string(json_str):
     except:
         return json_str
 
-# [HELPER] Leitor de Chaves Insensível a Maiúsculas/Minúsculas
+# [HELPER] Robust Key Reader
 def get_zis_key(data, key, default=None):
     if not isinstance(data, dict): return default
     if key in data: return data[key]
@@ -57,7 +56,7 @@ def get_zis_key(data, key, default=None):
             return v
     return default
 
-# [HELPER] Encontrar Melhor Índice em Listas
+# [HELPER] Smart Index Finder
 def find_best_match_index(options, target_value):
     if not target_value: return -1
     if target_value in options: return options.index(target_value)
@@ -67,7 +66,7 @@ def find_best_match_index(options, target_value):
             return i
     return -1
 
-# [HELPER] Normalizar Chaves ZIS (CamelCase)
+# [HELPER] Normalize & Clean Logic
 def normalize_zis_keys(obj):
     if isinstance(obj, dict):
         new_obj = {}
@@ -98,7 +97,6 @@ def normalize_zis_keys(obj):
     else:
         return obj
 
-# Limpa metadados desnecessários do Bundle
 def clean_flow_logic(flow_data):
     if not isinstance(flow_data, dict): return flow_data
     clean = flow_data.copy()
@@ -107,7 +105,7 @@ def clean_flow_logic(flow_data):
         if key in clean: del clean[key]
     return clean
 
-# [HELPER] Sanitizar Dados do Passo (Garante chaves mínimas)
+# [NEW] Sanitize Step Data
 def sanitize_step(step_data):
     keys_to_fix = {
         "next": "Next", "actionname": "ActionName", 
@@ -125,7 +123,7 @@ def sanitize_step(step_data):
                 if target not in step_data: step_data[target] = val
                 del step_data[k]
 
-# [CRÍTICO] Função de Sincronização Editor -> UI
+# [CRITICAL] Sync Function
 def try_sync_from_editor(new_content=None, force_ui_update=False):
     content = new_content if new_content is not None else st.session_state.get("editor_content", "")
     last_synced = st.session_state.get("last_synced_code", None)
@@ -144,17 +142,12 @@ def try_sync_from_editor(new_content=None, force_ui_update=False):
     try:
         cleaned_content = clean_json_string(content)
         js = json.loads(cleaned_content)
-        
-        # Extrai definição se for um Bundle completo
         if "resources" in js:
             for v in js["resources"].values():
                 if v.get("type") == "ZIS::Flow": 
                     js = v["properties"]["definition"]
                     break
-        
         norm_js = normalize_zis_keys(clean_flow_logic(js))
-        
-        # Atualiza Memória
         st.session_state["flow_json"] = norm_js
         st.session_state["last_synced_code"] = content
         st.session_state["ui_render_key"] += 1
@@ -164,7 +157,6 @@ def try_sync_from_editor(new_content=None, force_ui_update=False):
             st.session_state["editor_content"] = formatted_json
             st.session_state["last_synced_code"] = formatted_json
             st.session_state["editor_key"] += 1
-            
         return True, None
     except json.JSONDecodeError as e:
         return False, f"Erro JSON na linha {e.lineno}: {e.msg}"
@@ -172,7 +164,7 @@ def try_sync_from_editor(new_content=None, force_ui_update=False):
         return False, str(e)
 
 # ==========================================
-# 1. TEMA & CONFIGURAÇÃO
+# 1. THEME & CONFIG
 # ==========================================
 st.set_page_config(page_title="ZIS Studio Beta", layout="wide", page_icon="⚡", initial_sidebar_state="expanded")
 
@@ -185,7 +177,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Inicialização de Estado
 if "flow_json" not in st.session_state:
     st.session_state["flow_json"] = {"StartAt": "StartStep", "States": {"StartStep": {"Type": "Pass", "End": True}}}
 if "editor_key" not in st.session_state: st.session_state["editor_key"] = 0 
@@ -195,7 +186,7 @@ if "editor_content" not in st.session_state:
     st.session_state["editor_content"] = content
     st.session_state["last_synced_code"] = content
 
-# Cache para SVG (Estabilidade Visual)
+# Cache for SVG
 if "cached_svg" not in st.session_state: st.session_state["cached_svg"] = None
 if "cached_svg_version" not in st.session_state: st.session_state["cached_svg_version"] = -1
 
@@ -205,7 +196,7 @@ for key in ["zd_subdomain", "zd_email", "zd_token"]:
 from zis_engine import ZISFlowEngine
 
 # ==========================================
-# 3. HELPERS & RENDERIZADOR SVG ESTÁTICO
+# 3. HELPERS & STATIC SVG RENDERER
 # ==========================================
 def get_auth():
     return HTTPBasicAuth(f"{st.session_state.zd_email}/token", st.session_state.zd_token) if st.session_state.zd_token else None
@@ -219,24 +210,22 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [CRÍTICO] Renderizador SVG Estático com Injeção de CSS
-# Garante layout 100% estável gerando a geometria apenas quando o fluxo muda,
-# e aplicando o destaque via CSS (sem recalcular o grafo).
+# [NEW] CACHED SVG RENDERER - NATURAL SIZE
 def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: 
-        return st.warning("Graphviz não instalado. Adicione 'graphviz' ao requirements.txt")
+        return st.warning("Graphviz not installed. Please add 'graphviz' to requirements.txt")
 
     current_ui_version = st.session_state.get("ui_render_key", 0)
     
-    # 1. GERAÇÃO DA BASE (Apenas se o fluxo mudou)
+    # 1. GENERATE BASE GRAPH (Only if flow changed)
     if st.session_state["cached_svg"] is None or st.session_state["cached_svg_version"] != current_ui_version:
         try:
             dot = graphviz.Digraph(format='svg')
-            # Configurações de layout
+            # Settings for better spacing
             dot.attr(rankdir='TB', splines='polyline', compound='true')
             dot.attr(nodesep='0.6', ranksep='0.8') 
             
-            # Estilo padrão dos nós
+            # Use strict attributes for all nodes
             dot.attr('node', shape='box', style='filled,rounded', 
                      fillcolor='#ECECFF', color='#939393', penwidth='2',
                      fontname='Arial', fontsize='12', margin='0.2')
@@ -245,23 +234,22 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
             states = get_zis_key(flow_def, "States", {})
             start_step = get_zis_key(flow_def, "StartAt")
 
-            # Nós fixos
+            # Nodes
             dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", color="#388E3C", width="0.6", fontcolor="white", id="node_START", fontsize='10')
             dot.node("END", "End", shape="doublecircle", fillcolor="#333333", color="#000000", width="0.5", fontcolor="white", id="node_END", fontsize='10')
 
-            # Ordenação para determinismo
+            # Sort items specifically for graph generation consistency
             sorted_items = sorted(states.items())
             
             for k, v in sorted_items:
                 sType = get_zis_key(v, "Type", "Unknown")
-                # Truncar nomes muito longos
                 display_k = k if len(k) < 25 else k[:23] + ".."
                 label = f"{display_k}\n[{sType}]"
-                # ID sanitizado para seletor CSS
+                # Use a strictly alphanumeric ID for CSS targeting
                 safe_id = re.sub(r'[^a-zA-Z0-9]', '_', k)
                 dot.node(k, label, id=f"node_{safe_id}")
 
-            # Arestas
+            # Edges
             if start_step: dot.edge("START", start_step)
 
             for k, v in sorted_items:
@@ -274,22 +262,22 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
                     c_next = get_zis_key(c, "Next")
                     if c_next: dot.edge(k, c_next, label="Match", fontsize='10', fontcolor='#666')
                 
-                # Conexão com END
                 sType = get_zis_key(v, "Type", "Unknown")
                 is_explicit_end = get_zis_key(v, "End", False)
                 is_terminal = sType in ["Succeed", "Fail"]
                 if is_explicit_end or is_terminal:
                     dot.edge(k, "END")
 
-            # Obter SVG Bruto
+            # Get Raw SVG
             svg_bytes = dot.pipe()
             svg_str = svg_bytes.decode('utf-8')
             
-            # Limpeza para Responsividade: Remove width/height fixos para que o CSS controle
+            # [FIX] RESPONSIVENESS:
+            # We clean XML headers but we DO NOT remove width/height attributes.
+            # Graphviz calculates the perfect size for readability.
+            # We let CSS scale it DOWN if needed (max-width), but not stretch it up.
             svg_str = re.sub(r'<\?xml.*?>', '', svg_str)
             svg_str = re.sub(r'<!DOCTYPE.*?>', '', svg_str)
-            svg_str = re.sub(r'width="[^"]*"', '', svg_str, count=1)
-            svg_str = re.sub(r'height="[^"]*"', '', svg_str, count=1)
             
             st.session_state["cached_svg"] = svg_str
             st.session_state["cached_svg_version"] = current_ui_version
@@ -298,13 +286,11 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
             st.error(f"Render Error: {e}")
             return
 
-    # 2. RECUPERAR SVG DO CACHE
+    # 2. RETRIEVE CACHED SVG
     final_svg = st.session_state["cached_svg"]
     
-    # 3. GERAR CSS PARA DESTAQUES
+    # 3. GENERATE CSS FOR HIGHLIGHTS
     css_rules = []
-    
-    # Destaque de Seleção
     if selected_step:
         safe_sel_id = re.sub(r'[^a-zA-Z0-9]', '_', selected_step)
         css_rules.append(f"""
@@ -316,9 +302,8 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
             #node_{safe_sel_id} text {{ font-weight: bold; font-size: 14px; }}
         """)
         
-    # Destaque de Caminho (Debugger) - Usando set() para evitar duplicatas
     if highlight_path:
-        for step in set(highlight_path):
+        for step in highlight_path:
             if step == selected_step: continue
             safe_id = re.sub(r'[^a-zA-Z0-9]', '_', step)
             css_rules.append(f"""
@@ -328,7 +313,8 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
                 }}
             """)
 
-    # 4. RENDERIZAR EM CONTAINER RESPONSIVO (Permite rolagem natural)
+    # 4. RENDER IN RESPONSIVE CONTAINER
+    # max-width: 100% ensures it shrinks on small screens but doesn't blow up on large ones.
     full_html = f"""
     <!DOCTYPE html>
     <html>
@@ -342,9 +328,9 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
             box-sizing: border-box;
         }}
         svg {{
-            max-width: 100%; /* Encolhe se for muito largo */
-            height: auto;    /* Mantém a proporção e cresce verticalmente */
-            display: block;
+            max-width: 100%; /* Shrink if too wide */
+            height: auto;    /* Maintain aspect ratio */
+            display: block;  /* Remove inline gaps */
         }}
         { "".join(css_rules) }
     </style>
@@ -357,12 +343,12 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     </html>
     """
     
-    # Altura estimada para alocação de espaço no Streamlit
+    # Estimate height generously so Streamlit allocates space. 
     est_height = 200 + (len(get_zis_key(flow_def, "States", {})) * 120)
     components.html(full_html, height=est_height, scrolling=True)
 
 # ==========================================
-# 4. ÁREA DE TRABALHO PRINCIPAL
+# 4. MAIN WORKSPACE
 # ==========================================
 st.title("ZIS Studio")
 t_set, t_imp, t_code, t_vis, t_dep, t_deb = st.tabs(["⚙️ Settings", "📥 Import", "📝 Code Editor", "🎨 Visual Designer", "🚀 Deploy", "🐞 Debugger"])
@@ -388,6 +374,8 @@ with t_imp:
     else:
         if st.button("🚀 Start Deep Scan"):
             try:
+                # [FIX] Enhanced Progress Bar Logic
+                # Use st.status for better UX during long operations
                 with st.status("🔍 Scanning Zendesk Integrations...", expanded=True) as status:
                     
                     status.write("Fetching Integrations list...")
@@ -398,11 +386,13 @@ with t_imp:
                         total_ints = len(ints)
                         status.write(f"Found {total_ints} integrations. Scanning bundles...")
                         
+                        # Create progress bar inside the status container
                         progress_bar = status.progress(0)
                         
                         res = []
                         for idx, i in enumerate(ints):
                             nm = i["name"]
+                            # Update progress
                             progress = (idx + 1) / total_ints
                             progress_bar.progress(progress)
                             
@@ -413,7 +403,7 @@ with t_imp:
                                     for b in bundles:
                                         res.append({"int": nm, "bun": b["name"], "uuid": b.get("uuid", "")})
                             except:
-                                pass 
+                                pass # Skip faulty integrations silently to keep scanning
                         
                         st.session_state["scan_results"] = res
                         
