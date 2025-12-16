@@ -313,10 +313,11 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
                 }}
             """)
 
-    # 4. RENDER IN SCROLLABLE CONTAINER
-    # [FIX] CSS changes: 
-    # - .svg-wrapper now has overflow: auto to enable scrolling
-    # - svg now has width: 100% and height: auto to fill width and grow vertically without shrinking
+    # 4. RENDER IN UNLIMITED HEIGHT CONTAINER
+    # - width: 100% fits the container horizontally
+    # - height: auto ensures it grows as much as needed vertically
+    # - No overflow: auto here, we let the main page scroll
+    # - No forced max-height (vh)
     full_html = f"""
     <!DOCTYPE html>
     <html>
@@ -324,19 +325,17 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     <style>
         body {{ margin: 0; padding: 0; background: transparent; }}
         .svg-wrapper {{
-            width: 100vw;
-            height: 98vh;
+            width: 100%;
             display: flex;
-            justify-content: center; /* Center horizontally if smaller than screen */
-            align-items: flex-start; /* Align top */
-            overflow: auto; /* ENABLE SCROLL BARS */
-            padding: 20px;
+            justify-content: center;
+            align-items: flex-start;
+            padding: 10px;
             box-sizing: border-box;
         }}
         svg {{
             width: 100%;      /* Fill container width */
-            height: auto;     /* Maintain aspect ratio - DO NOT FORCE 100% HEIGHT */
-            min-width: 600px; /* Ensure it doesn't get too tiny on mobile if complex */
+            height: auto;     /* Infinite height growth */
+            min-width: 600px; /* Minimum width for readability */
         }}
         { "".join(css_rules) }
     </style>
@@ -349,7 +348,10 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     </html>
     """
     
-    components.html(full_html, height=750, scrolling=True)
+    # Estimate height generously so Streamlit allocates space. 
+    # 100px per state usually covers the node + spacing comfortably.
+    est_height = 200 + (len(get_zis_key(flow_def, "States", {})) * 120)
+    components.html(full_html, height=est_height, scrolling=False)
 
 # ==========================================
 # 4. MAIN WORKSPACE
