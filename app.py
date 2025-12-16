@@ -664,48 +664,60 @@ with t_dep:
 
             # [NEW] Confirmation Block (Outside Deploy Button Scope)
             if "pending_deployment_fix" in st.session_state:
-                st.divider()
-                st.info("The ZIS Studio found and fixed your code to enable the deployment. Would you like to apply these fixes to your code in the Code Editor?")
+                # Use a placeholder to prevent visual glitches/duplication on refresh
+                confirm_container = st.empty()
                 
-                c_yes, c_no = st.columns([1, 4])
-                with c_yes:
-                    if st.button("✅ Yes, Apply Fixes"):
-                        final_def = st.session_state["pending_deployment_fix"]
-                        
-                        # 1. Update Core State (Source of Truth)
-                        st.session_state["flow_json"] = final_def
-                        
-                        # 2. Update Editor State
-                        new_editor_code = json.dumps(final_def, indent=2)
-                        st.session_state["editor_content"] = new_editor_code
-                        st.session_state["last_synced_code"] = new_editor_code
-                        st.session_state["editor_key"] += 1
-                        
-                        # 3. Update Visuals & Debugger
-                        st.session_state["ui_render_key"] += 1
-                        st.session_state["cached_svg"] = None  # Force re-render of SVG
-                        if "debug_res" in st.session_state: 
-                            del st.session_state["debug_res"] # Clear stale debug logs/trace
-                        
-                        # 4. Cleanup
-                        del st.session_state["pending_deployment_fix"]
-                        if "pending_generated_actions" in st.session_state: 
-                            del st.session_state["pending_generated_actions"]
-                        
-                        st.toast("Code, Visuals & Debugger updated!", icon="🎉")
-                        time.sleep(1)
-                        force_refresh()
-                
-                with c_no:
-                    if st.button("❌ No"):
-                        del st.session_state["pending_deployment_fix"]
-                        if "pending_generated_actions" in st.session_state: del st.session_state["pending_generated_actions"]
-                        force_refresh()
+                with confirm_container.container():
+                    st.divider()
+                    st.info("The ZIS Studio found and fixed your code to enable the deployment. Would you like to apply these fixes to your code in the Code Editor?")
+                    
+                    c_yes, c_no = st.columns([1, 4])
+                    with c_yes:
+                        if st.button("✅ Yes, Apply Fixes"):
+                            final_def = st.session_state["pending_deployment_fix"]
+                            
+                            # 1. Update Core State (Source of Truth)
+                            st.session_state["flow_json"] = final_def
+                            
+                            # 2. Update Editor State
+                            new_editor_code = json.dumps(final_def, indent=2)
+                            st.session_state["editor_content"] = new_editor_code
+                            st.session_state["last_synced_code"] = new_editor_code
+                            st.session_state["editor_key"] += 1
+                            
+                            # 3. Update Visuals & Debugger
+                            st.session_state["ui_render_key"] += 1
+                            st.session_state["cached_svg"] = None
+                            if "debug_res" in st.session_state: 
+                                del st.session_state["debug_res"]
+                            
+                            # 4. Cleanup
+                            del st.session_state["pending_deployment_fix"]
+                            if "pending_generated_actions" in st.session_state: 
+                                del st.session_state["pending_generated_actions"]
+                            
+                            st.toast("Code, Visuals & Debugger updated!", icon="🎉")
+                            
+                            # Clear UI immediately before rerun to avoid duplication glitch
+                            confirm_container.empty()
+                            
+                            time.sleep(1)
+                            force_refresh()
+                    
+                    with c_no:
+                        if st.button("❌ No"):
+                            del st.session_state["pending_deployment_fix"]
+                            if "pending_generated_actions" in st.session_state: del st.session_state["pending_generated_actions"]
+                            
+                            # Clear UI immediately
+                            confirm_container.empty()
+                            
+                            force_refresh()
 
-                # Warning about Generated Actions
-                gen_acts = st.session_state.get("pending_generated_actions", {})
-                if gen_acts:
-                    st.warning(f"Note: {len(gen_acts)} actions were created as placeholders (pointing to example.com). You must update them in the Zendesk Registry for them to work.")
+                    # Warning about Generated Actions
+                    gen_acts = st.session_state.get("pending_generated_actions", {})
+                    if gen_acts:
+                        st.warning(f"Note: {len(gen_acts)} actions were created as placeholders (pointing to example.com). You must update them in the Zendesk Registry for them to work.")
 
 with t_deb:
     col_input, col_graph = st.columns([1, 1])
