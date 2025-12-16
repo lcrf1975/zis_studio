@@ -126,10 +126,22 @@ def try_sync_from_editor(new_content=None, force_ui_update=False):
     # Use provided content directly if available, otherwise fallback to session state
     content = new_content if new_content is not None else st.session_state.get("editor_content", "")
     
+    # [FIX] Check if content actually changed to avoid overwriting Flow with stale Editor content
+    last_synced = st.session_state.get("last_synced_code", None)
+    
+    # If explicitly forcing update OR content differs from last sync
+    should_process = force_ui_update or (content != last_synced)
+    
+    if not should_process:
+        # If no change in code, we do nothing to protect Visual Designer changes
+        return True, None
+
     if not content or not content.strip():
         if st.session_state.get("flow_json"):
+            # Restore content from JSON if editor is empty but memory exists
             content = json.dumps(st.session_state["flow_json"], indent=2)
-            if force_ui_update: st.session_state["editor_content"] = content
+            st.session_state["editor_content"] = content
+            st.session_state["last_synced_code"] = content
         else:
             return False, "Editor vazio."
     
@@ -147,10 +159,16 @@ def try_sync_from_editor(new_content=None, force_ui_update=False):
         
         # Update Memory
         st.session_state["flow_json"] = norm_js
+        st.session_state["last_synced_code"] = content
         
-        # If valid, also update the raw text state to match processed version
+        # [FIX] Increment UI Version Key to force Visual Widgets to re-render
+        st.session_state["ui_render_key"] += 1
+        
+        # If valid, also update the raw text state to match processed version if forced
         if force_ui_update:
-            st.session_state["editor_content"] = json.dumps(norm_js, indent=2)
+            formatted_json = json.dumps(norm_js, indent=2)
+            st.session_state["editor_content"] = formatted_json
+            st.session_state["last_synced_code"] = formatted_json
             st.session_state["editor_key"] += 1
             
         return True, None
@@ -176,8 +194,11 @@ st.markdown("""
 if "flow_json" not in st.session_state:
     st.session_state["flow_json"] = {"StartAt": "StartStep", "States": {"StartStep": {"Type": "Pass", "End": True}}}
 if "editor_key" not in st.session_state: st.session_state["editor_key"] = 0 
+if "ui_render_key" not in st.session_state: st.session_state["ui_render_key"] = 0 # [FIX] Version control for UI
 if "editor_content" not in st.session_state:
-    st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+    content = json.dumps(st.session_state["flow_json"], indent=2)
+    st.session_state["editor_content"] = content
+    st.session_state["last_synced_code"] = content
 
 for key in ["zd_subdomain", "zd_email", "zd_token"]:
     if key not in st.session_state: st.session_state[key] = ""
@@ -295,8 +316,11 @@ with t_imp:
                         if "Flow" in v.get("type", ""):
                             n_def = normalize_zis_keys(clean_flow_logic(v["properties"]["definition"]))
                             st.session_state["flow_json"] = n_def
-                            st.session_state["editor_content"] = json.dumps(n_def, indent=2)
+                            formatted_js = json.dumps(n_def, indent=2)
+                            st.session_state["editor_content"] = formatted_js
+                            st.session_state["last_synced_code"] = formatted_js
                             st.session_state["editor_key"] += 1
+                            st.session_state["ui_render_key"] += 1
                             st.toast("Loaded!", icon="🎉"); time.sleep(0.5); force_refresh(); break
 
 with t_code:
@@ -340,7 +364,11 @@ with t_code:
 
 with t_vis:
     # Always check if flow_json is valid before rendering
+    # This will only overwrite flow_json if code editor has new content
     ok, err = try_sync_from_editor(force_ui_update=False)
+    
+    # [FIX] Get current UI version key to append to widget keys
+    ui_key = st.session_state["ui_render_key"]
     
     if not ok: st.error(f"⚠️ Invalid JSON: {err}")
     else:
@@ -350,12 +378,18 @@ with t_vis:
         keys = list(states.keys())
         with c1:
             st.subheader("Config")
-            sel = st.selectbox("Step", ["(Select)"] + keys)
+            # [FIX] Append ui_key to selection to reset if underlying data changes
+            sel = st.selectbox("Step", ["(Select)"] + keys, key=f"step_selector_{ui_key}")
+            
             with st.expander("➕ Add Step"):
                 nn = st.text_input("Name"); nt = st.selectbox("Type", ["Action", "Choice", "Wait", "Pass", "Succeed", "Fail"])
                 if st.button("Add"): 
                     st.session_state["flow_json"]["States"][nn] = {"Type": nt, "End": True} if nt == "Pass" else {"Type": nt}
-                    st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+                    # Update sync state to prevent reversion
+                    formatted = json.dumps(st.session_state["flow_json"], indent=2)
+                    st.session_state["editor_content"] = formatted
+                    st.session_state["last_synced_code"] = formatted
+                    st.session_state["ui_render_key"] += 1
                     force_refresh()
             
             st.divider()
@@ -363,7 +397,8 @@ with t_vis:
                 s_dat = states[sel]; sanitize_step(s_dat); s_typ = get_zis_key(s_dat, "Type")
                 st.markdown(f"### {sel} `[{s_typ}]`")
                 if s_typ not in ["Succeed", "Fail", "Choice"]:
-                    is_end = st.checkbox("End Flow?", get_zis_key(s_dat, "End", False), key=f"end_{sel}")
+                    # [FIX] Append ui_key to all input keys
+                    is_end = st.checkbox("End Flow?", get_zis_key(s_dat, "End", False), key=f"end_{sel}_{ui_key}")
                     if is_end: s_dat["End"] = True; s_dat.pop("Next", None)
                     else:
                         s_dat.pop("End", None)
@@ -371,22 +406,31 @@ with t_vis:
                         curr_nxt = get_zis_key(s_dat, "Next", "")
                         idx = find_best_match_index(nxt_opts, curr_nxt)
                         final_idx = 0 if idx == -1 else idx
-                        new_nxt = st.selectbox("Next", ["(Select)"] + nxt_opts, index=final_idx, key=f"nxt_{sel}")
+                        new_nxt = st.selectbox("Next", ["(Select)"] + nxt_opts, index=final_idx, key=f"nxt_{sel}_{ui_key}")
                         if new_nxt != "(Select)": s_dat["Next"] = new_nxt
 
                 if s_typ == "Action":
-                    s_dat["ActionName"] = st.text_input("Action", get_zis_key(s_dat, "ActionName", ""), key=f"act_{sel}")
-                    s_dat["Parameters"] = json.loads(st.text_area("Params", json.dumps(get_zis_key(s_dat, "Parameters", {}), indent=2), key=f"prm_{sel}"))
-                    s_dat["ResultPath"] = st.text_input("ResultPath (e.g. $.myVar)", get_zis_key(s_dat, "ResultPath", ""), key=f"res_{sel}")
+                    s_dat["ActionName"] = st.text_input("Action", get_zis_key(s_dat, "ActionName", ""), key=f"act_{sel}_{ui_key}")
+                    
+                    # [FIX] Robust JSON handling for Parameters
+                    current_params = get_zis_key(s_dat, "Parameters", {})
+                    param_str = json.dumps(current_params, indent=2)
+                    new_param_str = st.text_area("Params", param_str, key=f"prm_{sel}_{ui_key}")
+                    try:
+                        s_dat["Parameters"] = json.loads(new_param_str)
+                    except:
+                        st.caption("❌ Invalid JSON in Params")
+                        
+                    s_dat["ResultPath"] = st.text_input("ResultPath (e.g. $.myVar)", get_zis_key(s_dat, "ResultPath", ""), key=f"res_{sel}_{ui_key}")
 
                 elif s_typ == "Choice":
-                    s_dat["Default"] = st.selectbox("Default", [k for k in keys if k != sel], index=find_best_match_index([k for k in keys if k != sel], get_zis_key(s_dat, "Default")), key=f"def_{sel}")
+                    s_dat["Default"] = st.selectbox("Default", [k for k in keys if k != sel], index=find_best_match_index([k for k in keys if k != sel], get_zis_key(s_dat, "Default")), key=f"def_{sel}_{ui_key}")
                     chs = get_zis_key(s_dat, "Choices", [])
                     if not isinstance(chs, list): chs = []
                     s_dat["Choices"] = chs
                     for i, ch in enumerate(chs):
                         with st.expander(f"Rule {i+1}"):
-                            ch["Variable"] = st.text_input("Var", get_zis_key(ch, "Variable", ""), key=f"cv_{i}_{sel}")
+                            ch["Variable"] = st.text_input("Var", get_zis_key(ch, "Variable", ""), key=f"cv_{i}_{sel}_{ui_key}")
                             
                             # Operator Logic
                             ops = ["StringEquals", "BooleanEquals", "NumericEquals", "NumericGreaterThan"]
@@ -394,8 +438,8 @@ with t_vis:
                             for op in ops:
                                 if get_zis_key(ch, op) is not None: curr_op = op; curr_val = get_zis_key(ch, op); break
                             
-                            new_op = st.selectbox("Op", ops, index=ops.index(curr_op), key=f"cop_{i}_{sel}")
-                            new_val = st.text_input("Val", str(curr_val), key=f"cqv_{i}_{sel}")
+                            new_op = st.selectbox("Op", ops, index=ops.index(curr_op), key=f"cop_{i}_{sel}_{ui_key}")
+                            new_val = st.text_input("Val", str(curr_val), key=f"cqv_{i}_{sel}_{ui_key}")
                             
                             # Clean old ops
                             for op in ops: ch.pop(op, None); ch.pop(op.lower(), None)
@@ -407,12 +451,17 @@ with t_vis:
                                 except: pass
                             ch[new_op] = real_val
                             
-                            ch["Next"] = st.selectbox("GoTo", [k for k in keys if k != sel], index=find_best_match_index([k for k in keys if k != sel], get_zis_key(ch, "Next")), key=f"cn_{i}_{sel}")
-                            if st.button("Del", key=f"cd_{i}_{sel}"): chs.pop(i); force_refresh()
-                    if st.button("Add Rule", key=f"ar_{sel}"): chs.append({"Variable": "$.", "StringEquals": "", "Next": ""}); force_refresh()
+                            ch["Next"] = st.selectbox("GoTo", [k for k in keys if k != sel], index=find_best_match_index([k for k in keys if k != sel], get_zis_key(ch, "Next")), key=f"cn_{i}_{sel}_{ui_key}")
+                            if st.button("Del", key=f"cd_{i}_{sel}_{ui_key}"): chs.pop(i); force_refresh()
+                    if st.button("Add Rule", key=f"ar_{sel}_{ui_key}"): chs.append({"Variable": "$.", "StringEquals": "", "Next": ""}); force_refresh()
 
-                if st.button("Save Changes", type="primary", key=f"sv_{sel}"):
-                    st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+                if st.button("Save Changes", type="primary", key=f"sv_{sel}_{ui_key}"):
+                    # [FIX] When saving from UI, update the editor content AND the last_synced_code
+                    # This prevents the Code Editor from detecting a difference on next load and reverting
+                    new_code = json.dumps(st.session_state["flow_json"], indent=2)
+                    st.session_state["editor_content"] = new_code
+                    st.session_state["last_synced_code"] = new_code
+                    st.session_state["editor_key"] += 1 # Force editor to reload with new text
                     st.success("Saved"); force_refresh()
 
         with c2:
