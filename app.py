@@ -156,6 +156,8 @@ def try_sync_from_editor(force_ui_update=False):
         norm_js = normalize_zis_keys(clean_flow_logic(js))
         st.session_state["flow_json"] = norm_js
         
+        # Only update the editor content variable if we explicitly want to force a UI refresh (e.g. format code)
+        # Otherwise, we trust the editor has the latest text
         if force_ui_update:
             st.session_state["editor_content"] = json.dumps(norm_js, indent=2)
             st.session_state["editor_key"] += 1
@@ -347,25 +349,27 @@ with t_code:
     if HAS_EDITOR:
         resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, key=dynamic_key)
         
-        # Capture text changes
+        # Capture text changes whenever they happen (blur, enter, change)
         if resp and resp.get("text"):
             st.session_state["editor_content"] = resp["text"]
-            # Attempt silent sync so switching tabs works
+            # Attempt silent sync so switching tabs works immediately
             try_sync_from_editor(force_ui_update=False)
 
-        # [NEW] Manual Save Button
-        # This guarantees the user can save even if the editor toolbar is hidden
+        # [NEW] Manual Save Button (Decoupled)
         col_btn_save, _ = st.columns([1, 4])
         with col_btn_save:
             if st.button("💾 Salvar e Atualizar Fluxo", type="primary", key="btn_manual_save"):
-                is_valid, _ = try_sync_from_editor(force_ui_update=True)
+                # [FIX] force_ui_update=False prevents the editor from resetting/flashing
+                # This ensures the current text in the browser is respected.
+                is_valid, _ = try_sync_from_editor(force_ui_update=False)
+                
                 if is_valid:
                     st.toast("Código Salvo e Processado!", icon="✅")
-                    force_refresh()
+                    # Note: We do NOT call force_refresh() here to avoid unmounting the editor
                 else:
                     st.error("❌ Erro de Sintaxe JSON. Verifique seu código.")
 
-        # [LEGACY] Check for editor's internal submit event
+        # [LEGACY] Check for editor's internal submit event (Ctrl+Enter)
         if resp and resp.get("type") == "submit":
             is_valid, _ = try_sync_from_editor(force_ui_update=True)
             if is_valid:
