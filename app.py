@@ -3,8 +3,6 @@ import json
 import requests
 import time
 import re
-import base64
-import streamlit.components.v1 as components
 from requests.auth import HTTPBasicAuth
 from jsonpath_ng import parse 
 
@@ -105,7 +103,7 @@ def clean_flow_logic(flow_data):
         if key in clean: del clean[key]
     return clean
 
-# [NEW] Sanitize Step Data
+# [HELPER] Sanitizar Dados do Passo
 def sanitize_step(step_data):
     keys_to_fix = {
         "next": "Next", "actionname": "ActionName", 
@@ -123,7 +121,7 @@ def sanitize_step(step_data):
                 if target not in step_data: step_data[target] = val
                 del step_data[k]
 
-# [CRITICAL] Sync Function
+# [CRÍTICO] Sincronização Editor -> UI
 def try_sync_from_editor(new_content=None, force_ui_update=False):
     content = new_content if new_content is not None else st.session_state.get("editor_content", "")
     last_synced = st.session_state.get("last_synced_code", None)
@@ -189,17 +187,13 @@ if "editor_content" not in st.session_state:
     st.session_state["editor_content"] = content
     st.session_state["last_synced_code"] = content
 
-# Cache for SVG
-if "cached_svg" not in st.session_state: st.session_state["cached_svg"] = None
-if "cached_svg_version" not in st.session_state: st.session_state["cached_svg_version"] = -1
-
 for key in ["zd_subdomain", "zd_email", "zd_token"]:
     if key not in st.session_state: st.session_state[key] = ""
 
 from zis_engine import ZISFlowEngine
 
 # ==========================================
-# 3. HELPERS & STATIC SVG RENDERER
+# 3. HELPERS & RENDERIZADOR NATIVO (RESTAURADO & DEBUG FIX)
 # ==========================================
 def get_auth():
     return HTTPBasicAuth(f"{st.session_state.zd_email}/token", st.session_state.zd_token) if st.session_state.zd_token else None
@@ -213,139 +207,77 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [NEW] CACHED SVG RENDERER - NATURAL SIZE
-def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
-    if not HAS_GRAPHVIZ: 
-        return st.warning("Graphviz not installed. Please add 'graphviz' to requirements.txt")
-
-    current_ui_version = st.session_state.get("ui_render_key", 0)
-    
-    # 1. GENERATE BASE GRAPH (Only if flow changed)
-    if st.session_state["cached_svg"] is None or st.session_state["cached_svg_version"] != current_ui_version:
-        try:
-            dot = graphviz.Digraph(format='svg')
-            # Settings for better spacing
-            dot.attr(rankdir='TB', splines='polyline', compound='true')
-            dot.attr(nodesep='0.6', ranksep='0.8') 
-            
-            # Use strict attributes for all nodes
-            dot.attr('node', shape='box', style='filled,rounded', 
-                     fillcolor='#ECECFF', color='#939393', penwidth='2',
-                     fontname='Arial', fontsize='12', margin='0.2')
-            dot.attr('edge', color='#666666', penwidth='1.5', arrowsize='0.7')
-
-            states = get_zis_key(flow_def, "States", {})
-            start_step = get_zis_key(flow_def, "StartAt")
-
-            # Nodes
-            dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", color="#388E3C", width="0.6", fontcolor="white", id="node_START", fontsize='10')
-            dot.node("END", "End", shape="doublecircle", fillcolor="#333333", color="#000000", width="0.5", fontcolor="white", id="node_END", fontsize='10')
-
-            # Sort items specifically for graph generation consistency
-            sorted_items = sorted(states.items())
-            
-            for k, v in sorted_items:
-                sType = get_zis_key(v, "Type", "Unknown")
-                display_k = k if len(k) < 25 else k[:23] + ".."
-                label = f"{display_k}\n[{sType}]"
-                # Use a strictly alphanumeric ID for CSS targeting
-                safe_id = re.sub(r'[^a-zA-Z0-9]', '_', k)
-                dot.node(k, label, id=f"node_{safe_id}")
-
-            # Edges
-            if start_step: dot.edge("START", start_step)
-
-            for k, v in sorted_items:
-                next_step = get_zis_key(v, "Next")
-                if next_step: dot.edge(k, next_step)
-                default_step = get_zis_key(v, "Default")
-                if default_step: dot.edge(k, default_step, label="Default", fontsize='10', fontcolor='#666')
-                choices = get_zis_key(v, "Choices", [])
-                for c in choices:
-                    c_next = get_zis_key(c, "Next")
-                    if c_next: dot.edge(k, c_next, label="Match", fontsize='10', fontcolor='#666')
-                
-                sType = get_zis_key(v, "Type", "Unknown")
-                is_explicit_end = get_zis_key(v, "End", False)
-                is_terminal = sType in ["Succeed", "Fail"]
-                if is_explicit_end or is_terminal:
-                    dot.edge(k, "END")
-
-            # Get Raw SVG
-            svg_bytes = dot.pipe()
-            svg_str = svg_bytes.decode('utf-8')
-            
-            # [FIX] RESPONSIVENESS:
-            # We clean XML headers but we DO NOT remove width/height attributes.
-            svg_str = re.sub(r'<\?xml.*?>', '', svg_str)
-            svg_str = re.sub(r'<!DOCTYPE.*?>', '', svg_str)
-            
-            st.session_state["cached_svg"] = svg_str
-            st.session_state["cached_svg_version"] = current_ui_version
-            
-        except Exception as e:
-            st.error(f"Render Error: {e}")
-            return
-
-    # 2. RETRIEVE CACHED SVG
-    final_svg = st.session_state["cached_svg"]
-    
-    # 3. GENERATE CSS FOR HIGHLIGHTS
-    css_rules = []
-    if selected_step:
-        safe_sel_id = re.sub(r'[^a-zA-Z0-9]', '_', selected_step)
-        # [FIX] Removed text font-weight: bold rule
-        css_rules.append(f"""
-            #node_{safe_sel_id} polygon, #node_{safe_sel_id} path, #node_{safe_sel_id} ellipse {{
-                fill: #FFF59D !important;
-                stroke: #FBC02D !important;
-                stroke-width: 3px !important;
-            }}
-        """)
+# [RESTAURADO] Renderizador Graphviz Nativo com Correção de Debug
+def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
+    if not HAS_GRAPHVIZ: return st.warning("Graphviz não instalado.")
+    try:
+        dot = graphviz.Digraph(comment='ZIS Flow')
         
-    if highlight_path:
-        for step in highlight_path:
-            if step == selected_step: continue
-            safe_id = re.sub(r'[^a-zA-Z0-9]', '_', step)
-            css_rules.append(f"""
-                #node_{safe_id} polygon, #node_{safe_id} path, #node_{safe_id} ellipse {{
-                    fill: #C8E6C9 !important;
-                    stroke: #4CAF50 !important;
-                }}
-            """)
+        # Configurações de Layout
+        dot.attr(layout='dot')
+        dot.attr(rankdir='TB', splines='polyline')
+        dot.attr(nodesep='0.6', ranksep='0.7')
+        
+        # Atributos Globais dos Nós (Geometria fixa)
+        dot.attr('node', shape='box', style='rounded,filled', 
+                 fontname='Arial', fontsize='12', 
+                 penwidth='1', margin='0.2') 
+        dot.attr('edge', color='#888888') 
+        
+        visited = set(highlight_path) if highlight_path else set()
+        start = get_zis_key(flow_def, "StartAt")
+        
+        # Define Cores Especiais para START/END se o fluxo foi rodado
+        start_fill = "#C8E6C9" if visited else "#4CAF50" # Verde claro se rodou, Verde escuro padrão
+        end_fill = "#C8E6C9" if visited else "#333333"
+        
+        # Nós Especiais
+        dot.node("START", "Start", shape="circle", fillcolor=start_fill, fontcolor="white", width="0.8", style="filled")
+        dot.node("END", "End", shape="doublecircle", fillcolor=end_fill, fontcolor="white", width="0.6", style="filled")
+        
+        if start: dot.edge("START", start)
 
-    # 4. RENDER IN RESPONSIVE CONTAINER
-    full_html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <style>
-        body {{ margin: 0; padding: 0; background: transparent; display: flex; justify-content: center; }}
-        .svg-wrapper {{
-            width: auto;
-            max-width: 100%;
-            padding: 10px;
-            box-sizing: border-box;
-        }}
-        svg {{
-            max-width: 100%; /* Shrink if too wide */
-            height: auto;    /* Maintain aspect ratio */
-            display: block;  /* Remove inline gaps */
-        }}
-        { "".join(css_rules) }
-    </style>
-    </head>
-    <body>
-        <div class="svg-wrapper">
-            {final_svg}
-        </div>
-    </body>
-    </html>
-    """
-    
-    # Estimate height generously so Streamlit allocates space. 
-    est_height = 200 + (len(get_zis_key(flow_def, "States", {})) * 120)
-    components.html(full_html, height=est_height, scrolling=True)
+        states = get_zis_key(flow_def, "States", {})
+        
+        # [IMPORTANTE] Ordenação para determinismo
+        sorted_items = sorted(states.items())
+        
+        for k, v in sorted_items:
+            fill = "#e0e0e0"
+            color = "black"
+            
+            # Lógica de Cores - Prioridade: Seleção > Visitado > Padrão
+            # [FIX] Garante que TODOS os nós em 'visited' recebam a cor verde
+            if k == selected_step: 
+                fill = "#FFF59D"
+                color = "#FBC02D"
+            elif k in visited: 
+                fill = "#C8E6C9"
+            
+            sType = get_zis_key(v, "Type", "Unknown")
+            
+            dot.node(k, f"{k}\n({sType})", fillcolor=fill, color=color)
+            
+            # Arestas
+            next_step = get_zis_key(v, "Next")
+            if next_step: dot.edge(k, next_step)
+            
+            default_step = get_zis_key(v, "Default")
+            if default_step: dot.edge(k, default_step, label="Default")
+            
+            choices = get_zis_key(v, "Choices", [])
+            for c in choices:
+                c_next = get_zis_key(c, "Next")
+                if c_next: dot.edge(k, c_next, label="Match")
+            
+            # Conexão com Fim
+            is_explicit_end = get_zis_key(v, "End", False)
+            is_terminal = sType in ["Succeed", "Fail"]
+            if is_explicit_end or is_terminal: 
+                dot.edge(k, "END")
+        
+        st.graphviz_chart(dot, use_container_width=True) 
+    except Exception as e: st.warning(f"Graph Error: {e}")
 
 # ==========================================
 # 4. ÁREA DE TRABALHO PRINCIPAL
@@ -374,10 +306,8 @@ with t_imp:
     else:
         if st.button("🚀 Start Deep Scan"):
             try:
-                # [FIX] Enhanced Progress Bar Logic
-                # Use st.status for better UX during long operations
+                # [FIX] Barra de Progresso Restaurada
                 with st.status("🔍 Scanning Zendesk Integrations...", expanded=True) as status:
-                    
                     status.write("Fetching Integrations list...")
                     resp = requests.get(f"{get_base_url()}/integrations", auth=get_auth())
                     
@@ -387,35 +317,27 @@ with t_imp:
                         status.write(f"Found {total_ints} integrations. Scanning bundles...")
                         
                         progress_bar = status.progress(0)
-                        
                         res = []
+                        
                         for idx, i in enumerate(ints):
                             nm = i["name"]
-                            # Update progress
                             progress = (idx + 1) / total_ints
                             progress_bar.progress(progress)
-                            
                             try:
                                 b_resp = requests.get(f"{get_base_url()}/{nm}/bundles", auth=get_auth())
                                 if b_resp.status_code == 200:
-                                    bundles = b_resp.json().get("bundles", [])
-                                    for b in bundles:
+                                    for b in b_resp.json().get("bundles", []):
                                         res.append({"int": nm, "bun": b["name"], "uuid": b.get("uuid", "")})
-                            except:
-                                pass # Skip faulty integrations silently to keep scanning
+                            except: pass
                         
                         st.session_state["scan_results"] = res
-                        
                         if res: 
-                            status.update(label=f"✅ Scan Complete! Found {len(res)} bundles.", state="complete", expanded=False)
+                            status.update(label=f"✅ Found {len(res)} bundles!", state="complete", expanded=False)
                             st.success(f"Found {len(res)} bundles.")
                         else: 
-                            status.update(label="⚠️ Scan Complete. No bundles found.", state="complete", expanded=False)
+                            status.update(label="⚠️ No bundles found.", state="complete", expanded=False)
                             st.warning("No bundles found.")
-                    else:
-                        status.update(label="❌ API Error", state="error")
-                        st.error(f"API Error: {resp.status_code}")
-                        
+                    else: st.error(f"API Error: {resp.status_code}")
             except Exception as e: st.error(str(e))
 
         if "scan_results" in st.session_state:
@@ -545,14 +467,16 @@ with t_vis:
                     if st.button("Add Rule", key=f"ar_{sel}_{ui_key}"): chs.append({"Variable": "$.", "StringEquals": "", "Next": ""}); force_refresh()
 
                 if st.button("Save Changes", type="primary", key=f"sv_{sel}_{ui_key}"):
+                    # [FIX] When saving from UI, update the editor content AND the last_synced_code
+                    # This prevents the Code Editor from detecting a difference on next load and reverting
                     new_code = json.dumps(st.session_state["flow_json"], indent=2)
                     st.session_state["editor_content"] = new_code
                     st.session_state["last_synced_code"] = new_code
-                    st.session_state["editor_key"] += 1
+                    st.session_state["editor_key"] += 1 # Force editor to reload with new text
                     st.success("Saved"); force_refresh()
 
         with c2:
-            render_flow_static_svg(curr, selected_step=sel if sel != "(Select)" else None)
+            render_flow_graph(curr, selected_step=sel if sel != "(Select)" else None)
 
 with t_dep:
     if not st.session_state.get("is_connected"): st.warning("Connect in Settings first.")
@@ -600,4 +524,4 @@ with t_deb:
     with col_graph:
         st.markdown("### Trace")
         current_path = st.session_state["debug_res"][2] if "debug_res" in st.session_state else None
-        render_flow_static_svg(st.session_state["flow_json"], current_path)
+        render_flow_graph(st.session_state["flow_json"], current_path)
