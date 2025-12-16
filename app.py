@@ -584,6 +584,12 @@ with t_dep:
                         generated_actions = {} # Store auto-generated resource definitions
                         
                         for s_name, s_body in states_to_fix.items():
+                            # Fix 3: Sanitize ResultPath
+                            if "ResultPath" in s_body:
+                                rp = s_body["ResultPath"]
+                                if not rp or rp.strip() == "" or rp.strip() == "$.":
+                                    del s_body["ResultPath"]
+
                             if s_body.get("Type") == "Action":
                                 a_name = s_body.get("ActionName", "")
                                 
@@ -612,9 +618,13 @@ with t_dep:
                                                 "definition": {
                                                     "method": "POST",
                                                     "url": f"https://example.com/placeholder/{simple_name}",
-                                                    "headers": {"Content-Type": "application/json"},
-                                                    "body": {
-                                                        "info": f"Auto-generated placeholder for {simple_name}. Update this in ZIS Registry."
+                                                    # FIX: Headers must be an array of objects
+                                                    "headers": [
+                                                        {"key": "Content-Type", "value": "application/json"}
+                                                    ],
+                                                    # FIX: use requestBody instead of body
+                                                    "requestBody": {
+                                                        "info": f"Auto-generated placeholder for {simple_name}."
                                                     }
                                                 }
                                             }
@@ -643,8 +653,21 @@ with t_dep:
                         r = requests.post(f"{get_base_url()}/{target_int}/bundles", auth=get_auth(), json=payload, headers={"Content-Type": "application/json"})
                         if r.status_code in [200, 201]:
                             st.balloons(); status.update(label="Deployed!", state="complete"); st.success(f"Deployed {safe_bun} to {target_int}")
+                            
+                            # [NEW] Apply corrections back to editor
+                            st.session_state["flow_json"] = final_def
+                            new_editor_code = json.dumps(final_def, indent=2)
+                            st.session_state["editor_content"] = new_editor_code
+                            st.session_state["last_synced_code"] = new_editor_code
+                            st.session_state["editor_key"] += 1
+                            st.session_state["ui_render_key"] += 1
+                            st.info("ℹ️ O código do editor foi atualizado automaticamente com as correções de Deploy.")
+
                             if generated_actions:
                                 st.warning(f"Note: {len(generated_actions)} actions were created as placeholders (pointing to example.com). You must update them in the Zendesk Registry for them to work.")
+                            
+                            time.sleep(2)
+                            force_refresh()
                         else:
                             status.update(label="Failed", state="error"); st.error(r.text)
                     except Exception as e: st.error(str(e))
