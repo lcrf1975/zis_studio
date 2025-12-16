@@ -209,10 +209,15 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
         dot = graphviz.Digraph(comment='ZIS Flow')
-        # [FIX] Layout Stability: Explicit 'dot' layout and 'ortho' splines
+        
+        # [FIX] Stability Upgrade:
+        # - Switched splines from 'ortho' (unstable) to 'polyline' (stable straight lines)
+        # - Increased separation (nodesep, ranksep) to reduce routing complexity
+        # - Explicitly set layout engine to 'dot'
         dot.attr(layout='dot')
-        dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
-        # [FIX] Force all nodes to have identical geometry attributes to prevent layout shifts
+        dot.attr(rankdir='TB', splines='polyline', nodesep='0.6', ranksep='0.8')
+        
+        # Force uniform node geometry to prevent layout shifts on selection
         dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12', penwidth='1', margin='0.2')
         dot.attr('edge', color='#888888') 
         
@@ -224,8 +229,7 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
 
         states = get_zis_key(flow_def, "States", {})
         
-        # [CRITICAL FIX] Sort items to ensure deterministic graph generation order.
-        # This prevents Graphviz from calculating different orthogonal routes when dictionary order varies implicitly.
+        # Sort items to ensure deterministic graph generation order
         for k, v in sorted(states.items()):
             fill = "#e0e0e0"
             color = "black" 
