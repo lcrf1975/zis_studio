@@ -27,12 +27,21 @@ def force_refresh():
     else:
         st.experimental_rerun()
 
-# [HELPER] Remove Comments for JSON parsing
-def remove_comments(json_str):
+# [HELPER] Robust JSON Cleaner
+def clean_json_string(json_str):
     if not isinstance(json_str, str): return ""
-    # Remove non-breaking spaces often caused by copy-pasting
+    
+    # 1. Remove espaços em branco do início/fim
+    json_str = json_str.strip()
+    
+    # 2. Remove marcadores de Markdown e ZIS wrappers comuns
+    json_str = re.sub(r'^```[a-zA-Z]*\s*', '', json_str)
+    json_str = re.sub(r'\s*```$', '', json_str)
+    
+    # 3. Remove caracteres invisíveis
     json_str = json_str.replace("\u00a0", " ")
     
+    # 4. Remove Comentários estilo C
     pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
     def replace(match):
         if match.group(1): return match.group(1) 
@@ -42,33 +51,24 @@ def remove_comments(json_str):
     except:
         return json_str
 
-# [HELPER] Robust Key Reader (Case Insensitive)
+# [HELPER] Robust Key Reader
 def get_zis_key(data, key, default=None):
     if not isinstance(data, dict): return default
-    # Priority 1: Exact Match
     if key in data: return data[key]
-    # Priority 2: Case Insensitive Match
     lower_key = key.lower()
     for k, v in data.items():
         if k.lower() == lower_key:
             return v
     return default
 
-# [HELPER] Smart Index Finder (Prevents Jumping to Index 0)
+# [HELPER] Smart Index Finder
 def find_best_match_index(options, target_value):
     if not target_value: return -1
-    
-    # 1. Exact Match
-    if target_value in options:
-        return options.index(target_value)
-    
-    # 2. Case Insensitive Match
+    if target_value in options: return options.index(target_value)
     lower_target = str(target_value).lower().strip()
     for i, opt in enumerate(options):
         if str(opt).lower().strip() == lower_target:
             return i
-            
-    # 3. No match found
     return -1
 
 # [HELPER] Normalize & Clean Logic
@@ -94,7 +94,6 @@ def normalize_zis_keys(obj):
         }
         for k, v in obj.items():
             lower_k = k.lower()
-            # If we have a known ZIS key, force PascalCase
             final_key = zis_keys.get(lower_k, k) 
             new_obj[final_key] = normalize_zis_keys(v) 
         return new_obj
@@ -111,8 +110,7 @@ def clean_flow_logic(flow_data):
         if key in clean: del clean[key]
     return clean
 
-# [NEW] Sanitize Step Data (Run before editing)
-# Merges "next" and "Next" to avoid conflicts that confuse the UI
+# [NEW] Sanitize Step Data
 def sanitize_step(step_data):
     keys_to_fix = {
         "next": "Next", "actionname": "ActionName", 
@@ -120,37 +118,33 @@ def sanitize_step(step_data):
         "choices": "Choices", "type": "Type", "end": "End",
         "resultpath": "ResultPath", "seconds": "Seconds"
     }
-    
-    # Snapshot of keys to avoid runtime dict change errors
     existing_keys = list(step_data.keys())
-    
     for k in existing_keys:
         k_lower = k.lower()
         if k_lower in keys_to_fix:
             target = keys_to_fix[k_lower]
-            # If we have a lowercase key (e.g. 'next')
             if k != target:
                 val = step_data[k]
-                # If target ('Next') is missing, move value there
-                if target not in step_data:
-                    step_data[target] = val
-                # Delete the old lowercase key to prevent duplicate truth
+                if target not in step_data: step_data[target] = val
                 del step_data[k]
 
-# [CRITICAL] Sync Function: Ensures flow_json matches editor_content
+# [CRITICAL] Sync Function
 def try_sync_from_editor(force_ui_update=False):
-    """
-    Attempts to parse the current editor string content into the flow_json object.
-    Returns (True, parsed_json) if successful, (False, error_message) if invalid JSON.
-    """
     content = st.session_state.get("editor_content", "")
-    if not content:
-        return False, "Editor vazio"
+    
+    # [FIX] If editor is empty, try to recover from last known valid flow_json
+    if not content or not content.strip():
+        if st.session_state.get("flow_json"):
+            # Recover content
+            content = json.dumps(st.session_state["flow_json"], indent=2)
+            st.session_state["editor_content"] = content
+        else:
+            return False, "Editor vazio e sem backup"
     
     try:
-        js = json.loads(remove_comments(content))
+        cleaned_content = clean_json_string(content)
+        js = json.loads(cleaned_content)
         
-        # Handle ZIS Bundle wrapper structure if present
         if "resources" in js:
             for v in js["resources"].values():
                 if v.get("type") == "ZIS::Flow": 
@@ -160,24 +154,20 @@ def try_sync_from_editor(force_ui_update=False):
         norm_js = normalize_zis_keys(clean_flow_logic(js))
         st.session_state["flow_json"] = norm_js
         
-        # Only update the editor content variable if we explicitly want to force a UI refresh
         if force_ui_update:
             st.session_state["editor_content"] = json.dumps(norm_js, indent=2)
             st.session_state["editor_key"] += 1
             
         return True, None
+    except json.JSONDecodeError as e:
+        return False, f"Erro JSON na linha {e.lineno}: {e.msg}"
     except Exception as e:
         return False, str(e)
 
 # ==========================================
 # 1. THEME & CONFIG
 # ==========================================
-st.set_page_config(
-    page_title="ZIS Studio Beta", 
-    layout="wide", 
-    page_icon="⚡",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="ZIS Studio Beta", layout="wide", page_icon="⚡", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
@@ -220,9 +210,7 @@ def test_connection():
 def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
-        # Use a unique key based on the definition to force re-render when data changes
         flow_hash = str(hash(json.dumps(flow_def, sort_keys=True)))
-        
         dot = graphviz.Digraph(comment='ZIS Flow')
         dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
         dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12')
@@ -236,15 +224,9 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
 
         states = get_zis_key(flow_def, "States", {})
         for k, v in states.items():
-            fill = "#e0e0e0" 
-            pen = "1"
-            if k in visited:
-                fill = "#C8E6C9" 
-                pen = "2"
-                if highlight_path and k == highlight_path[-1]: fill = "#81C784"
-            if selected_step and k == selected_step:
-                fill = "#FFF59D" 
-                pen = "3"
+            fill = "#e0e0e0"; pen = "1"
+            if k in visited: fill = "#C8E6C9"; pen = "2"
+            if k == selected_step: fill = "#FFF59D"; pen = "3"
 
             sType = get_zis_key(v, "Type", "Unknown")
             dot.node(k, f"{k}\n({sType})", fillcolor=fill, penwidth=pen)
@@ -263,8 +245,6 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
             if get_zis_key(v, "End"): 
                 dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
                 dot.edge(k, "END")
-        
-        # Only draw if the graph is valid
         st.graphviz_chart(dot, use_container_width=True) 
     except Exception as e: st.warning(f"Graph Error: {e}")
 
@@ -272,16 +252,13 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
 # 4. MAIN WORKSPACE
 # ==========================================
 st.title("ZIS Studio")
-
-t_set, t_imp, t_code, t_vis, t_dep, t_deb = st.tabs([
-    "⚙️ Settings", "📥 Import", "📝 Code Editor", "🎨 Visual Designer", "🚀 Deploy", "🐞 Debugger"
-])
+t_set, t_imp, t_code, t_vis, t_dep, t_deb = st.tabs(["⚙️ Settings", "📥 Import", "📝 Code Editor", "🎨 Visual Designer", "🚀 Deploy", "🐞 Debugger"])
 
 # --- TAB 1: SETTINGS ---
 with t_set:
     st.markdown("### 🔑 Zendesk Credentials")
-    col_creds, col_info = st.columns([1, 1])
-    with col_creds:
+    c1, c2 = st.columns([1, 1])
+    with c1:
         with st.container(border=True):
             st.text_input("Subdomain", key="zd_subdomain")
             st.text_input("Email", key="zd_email")
@@ -290,292 +267,152 @@ with t_set:
                 ok, msg = test_connection()
                 if ok: st.session_state["is_connected"] = True; st.toast(msg, icon="✅") 
                 else: st.toast(msg, icon="❌")
-    with col_info:
-        if st.session_state.get("is_connected"):
-            st.success(f"✅ Connected to: **{st.session_state.zd_subdomain}.zendesk.com**")
+    with c2:
+        if st.session_state.get("is_connected"): st.success(f"✅ Connected to: **{st.session_state.zd_subdomain}**")
 
 # --- TAB 2: IMPORT ---
 with t_imp:
     st.markdown("### 🔎 Find Existing Flows")
-    if not st.session_state.get("is_connected"):
-        st.warning("Please configure your credentials in the '⚙️ Settings' tab first.")
+    if not st.session_state.get("is_connected"): st.warning("Configure Settings first.")
     else:
         if st.button("🚀 Start Deep Scan"):
-            results = []
-            status_text = st.empty()
             try:
-                status_text.text("Fetching...")
                 resp = requests.get(f"{get_base_url()}/integrations", auth=get_auth())
                 if resp.status_code == 200:
                     ints = resp.json().get("integrations", [])
-                    for idx, int_obj in enumerate(ints):
-                        int_name = int_obj["name"]
-                        status_text.text(f"Scanning {int_name}...")
-                        b_resp = requests.get(f"{get_base_url()}/{int_name}/bundles", auth=get_auth())
+                    res = []
+                    for i in ints:
+                        nm = i["name"]
+                        b_resp = requests.get(f"{get_base_url()}/{nm}/bundles", auth=get_auth())
                         if b_resp.status_code == 200:
                             for b in b_resp.json().get("bundles", []):
-                                results.append({"int": int_name, "bun": b["name"], "uuid": b.get("uuid", "")})
-                        time.sleep(0.05)
-                    st.session_state["scan_results"] = results
-                    status_text.empty()
-                    if results: st.success(f"Found {len(results)} bundles.")
+                                res.append({"int": nm, "bun": b["name"], "uuid": b.get("uuid", "")})
+                    st.session_state["scan_results"] = res
+                    if res: st.success(f"Found {len(res)} bundles.")
                     else: st.warning("No bundles found.")
-                else: st.error("Failed to fetch.")
             except Exception as e: st.error(str(e))
 
         if "scan_results" in st.session_state:
             res = st.session_state["scan_results"]
-            st.divider()
-            with st.container(border=True):
-                st.subheader("Select a Flow to Load")
-                sel_idx = st.selectbox("Available Flows", range(len(res)), format_func=lambda i: f"{res[i]['int']} / {res[i]['bun']}")
-                if st.button("Load Flow", key="btn_load_final"):
-                    item = res[sel_idx]
-                    url = f"{get_base_url()}/{item['int']}/bundles/{item['uuid'] or item['bun']}"
-                    with st.spinner("Downloading code..."):
-                        r = requests.get(url, auth=get_auth())
-                        if r.status_code == 200:
-                            found = False
-                            for k, v in r.json().get("resources", {}).items():
-                                if "Flow" in v.get("type", ""):
-                                    raw_def = clean_flow_logic(v["properties"]["definition"])
-                                    norm_def = normalize_zis_keys(raw_def)
-                                    st.session_state["flow_json"] = norm_def
-                                    st.session_state["editor_content"] = json.dumps(norm_def, indent=2)
-                                    st.session_state["current_bundle_name"] = item['bun']
-                                    st.session_state["editor_key"] += 1 
-                                    st.toast("Flow Loaded!", icon="🎉")
-                                    found = True
-                                    time.sleep(0.5); force_refresh()
-                                    break
-                            if not found: st.warning("No Flow resource found.")
-                        else: st.error("Fetch failed.")
+            sel = st.selectbox("Flows", range(len(res)), format_func=lambda i: f"{res[i]['int']} / {res[i]['bun']}")
+            if st.button("Load Flow"):
+                it = res[sel]
+                url = f"{get_base_url()}/{it['int']}/bundles/{it['uuid'] or it['bun']}"
+                r = requests.get(url, auth=get_auth())
+                if r.status_code == 200:
+                    for v in r.json().get("resources", {}).values():
+                        if "Flow" in v.get("type", ""):
+                            n_def = normalize_zis_keys(clean_flow_logic(v["properties"]["definition"]))
+                            st.session_state["flow_json"] = n_def
+                            st.session_state["editor_content"] = json.dumps(n_def, indent=2)
+                            st.session_state["editor_key"] += 1
+                            st.toast("Loaded!", icon="🎉"); time.sleep(0.5); force_refresh(); break
 
 # --- TAB 3: CODE ---
 with t_code:
-    dynamic_key = f"code_editor_{st.session_state['editor_key']}"
+    dk = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
-        # [FIX] Added explicit options to force line numbers and wrapping
-        editor_options = {
-            "showLineNumbers": True,
-            "showGutter": True,
-            "wrap": True,
-            "autoClosingBrackets": True
-        }
-
-        resp = code_editor(
-            st.session_state.get("editor_content", ""), 
-            lang="json", 
-            height=600, 
-            key=dynamic_key,
-            options=editor_options
-        )
+        resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=600, key=dk, options={"showLineNumbers": True, "wrap": True})
         
-        # Capture text changes immediately
+        # [CRITICAL FIX] Only update state if content is VALID and NOT EMPTY
         if resp and resp.get("text") is not None:
-            st.session_state["editor_content"] = resp["text"]
-            try_sync_from_editor(force_ui_update=False)
-
-        col_btn_save, _ = st.columns([1, 4])
-        with col_btn_save:
-            if st.button("💾 Salvar e Atualizar Fluxo", type="primary", key="btn_manual_save"):
-                is_valid, error_msg = try_sync_from_editor(force_ui_update=False)
-                
-                if is_valid:
-                    st.toast("Sucesso! O Visual Designer foi atualizado.", icon="✅")
-                    time.sleep(0.1) 
+            new_text = resp["text"]
+            if new_text.strip(): # Ignore empty strings to prevent state loss
+                st.session_state["editor_content"] = new_text
+                try_sync_from_editor(False)
+        
+        c_btn, _ = st.columns([1,4])
+        with c_btn:
+            if st.button("💾 Salvar e Atualizar Fluxo", type="primary"):
+                # Force sync from memory
+                ok, err = try_sync_from_editor(False)
+                if ok: 
+                    st.toast("Salvo!", icon="✅")
+                    time.sleep(0.1)
                     force_refresh()
-                else:
-                    st.error(f"❌ Erro de Sintaxe JSON: {error_msg}")
+                else: 
+                    st.error(f"❌ Erro de Sintaxe: {err}")
 
 # --- TAB 4: VISUAL DESIGNER ---
 with t_vis:
-    sync_ok, error_msg = try_sync_from_editor(force_ui_update=False)
-    
-    if not sync_ok:
-        st.error(f"⚠️ **Syntax Error:** The code in the 'Code Editor' tab is invalid JSON.\n\nError Details: `{error_msg}`")
+    ok, err = try_sync_from_editor(False)
+    if not ok: st.error(f"⚠️ Invalid JSON: {err}")
     else:
-        st.caption(f"Visualização gerada em: {time.strftime('%H:%M:%S')}")
         c1, c2 = st.columns([1, 2])
         curr = st.session_state["flow_json"]
         states = get_zis_key(curr, "States", {})
         keys = list(states.keys())
-        
         with c1:
-            st.subheader("🛠️ Configure Step")
-            if not keys:
-                st.info("Start by adding a step below.")
-                selected_step = None
-            else:
-                selected_step = st.selectbox("Select Step to Edit", ["(Select a Step)"] + keys, key="sel_step_edit")
+            st.subheader("Config")
+            sel = st.selectbox("Step", ["(Select)"] + keys)
+            with st.expander("➕ Add Step"):
+                nn = st.text_input("Name"); nt = st.selectbox("Type", ["Action", "Choice", "Wait", "Pass", "Succeed", "Fail"])
+                if st.button("Add"): 
+                    st.session_state["flow_json"]["States"][nn] = {"Type": nt, "End": True} if nt == "Pass" else {"Type": nt}
+                    st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+                    force_refresh()
             
-            with st.expander("➕ Add New Step"):
-                new_step_name = st.text_input("New Step Name", key="inp_new_name")
-                new_step_type = st.selectbox("Type", ["Action", "Choice", "Wait", "Pass", "Succeed", "Fail"], key="sel_new_type")
-                if st.button("Create Step"):
-                    if new_step_name and new_step_name not in states:
-                        new_def = {"Type": new_step_type}
-                        if new_step_type == "Pass": new_def["End"] = True
-                        st.session_state["flow_json"]["States"][new_step_name] = new_def
-                        st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-                        force_refresh()
-
             st.divider()
-            if selected_step and selected_step != "(Select a Step)" and selected_step in states:
-                step_data = states[selected_step]
-                sanitize_step(step_data)
-                step_type = get_zis_key(step_data, "Type")
-                st.markdown(f"### ⚙️ {selected_step} `[{step_type}]`")
-                
-                key_suffix = f"_{selected_step}"
-                is_terminal = step_type in ["Succeed", "Fail", "Choice"] 
-                
-                if not is_terminal:
-                    is_end_val = get_zis_key(step_data, "End", False)
-                    is_end = st.checkbox("End Flow?", value=is_end_val, key=f"chk_is_end{key_suffix}")
-                    
-                    if is_end: 
-                        step_data["End"] = True
-                        if "Next" in step_data: del step_data["Next"]
+            if sel != "(Select)" and sel in states:
+                s_dat = states[sel]; sanitize_step(s_dat); s_typ = get_zis_key(s_dat, "Type")
+                st.markdown(f"### {sel} `[{s_typ}]`")
+                if s_typ not in ["Succeed", "Fail", "Choice"]:
+                    is_end = st.checkbox("End Flow?", get_zis_key(s_dat, "End", False), key=f"end_{sel}")
+                    if is_end: s_dat["End"] = True; s_dat.pop("Next", None)
                     else:
-                        if "End" in step_data: del step_data["End"]
-                        current_next = get_zis_key(step_data, "Next", "")
-                        next_options = [opt for opt in keys if opt != selected_step]
-                        idx = find_best_match_index(next_options, current_next)
-                        final_options = ["(Select a Step)"] + next_options if idx == -1 else next_options
+                        s_dat.pop("End", None)
+                        nxt_opts = [k for k in keys if k != sel]
+                        curr_nxt = get_zis_key(s_dat, "Next", "")
+                        idx = find_best_match_index(nxt_opts, curr_nxt)
                         final_idx = 0 if idx == -1 else idx
-                        
-                        selected_val = st.selectbox("Go to Next", final_options, index=final_idx, key=f"sel_next_{selected_step}_{current_next}")
-                        if selected_val != "(Select a Step)" and selected_val != current_next:
-                            step_data["Next"] = selected_val
+                        new_nxt = st.selectbox("Next", ["(Select)"] + nxt_opts, index=final_idx, key=f"nxt_{sel}")
+                        if new_nxt != "(Select)": s_dat["Next"] = new_nxt
 
-                if step_type == "Action":
-                    curr_act = get_zis_key(step_data, "ActionName", "")
-                    new_act = st.text_input("Action Name", value=curr_act, key=f"inp_act_name{key_suffix}")
-                    if new_act != curr_act: step_data["ActionName"] = new_act
-                    
-                    curr_params = get_zis_key(step_data, "Parameters", {})
-                    current_params_str = json.dumps(curr_params, indent=2)
-                    new_params_str = st.text_area("Parameters JSON", value=current_params_str, height=150, key=f"inp_act_params{key_suffix}")
-                    
-                    if new_params_str != current_params_str:
-                        try: step_data["Parameters"] = json.loads(new_params_str)
-                        except: st.error("Invalid JSON")
-                    
-                elif step_type == "Choice":
-                    current_def = get_zis_key(step_data, "Default", "")
-                    opts = [o for o in keys if o != selected_step]
-                    
-                    d_idx = find_best_match_index(opts, current_def)
-                    def_opts = ["(Select a Step)"] + opts if d_idx == -1 else opts
-                    def_final_idx = 0 if d_idx == -1 else d_idx
-                    
-                    sel_def = st.selectbox("Else (Default Path)", def_opts, index=def_final_idx, key=f"sel_choice_def{key_suffix}")
-                    if sel_def != "(Select a Step)" and sel_def != current_def:
-                         step_data["Default"] = sel_def
-                    
-                    # [FIX] Force retrieval of Choices list, ensuring it's a list
-                    raw_choices = get_zis_key(step_data, "Choices")
-                    if raw_choices is None: 
-                        # Try finding lowercase fallback manually if get_zis_key missed it
-                        raw_choices = step_data.get("choices")
-                    
-                    if not isinstance(raw_choices, list): raw_choices = []
-                    
-                    # Force update dict to ensure we are editing the real list
-                    step_data["Choices"] = raw_choices 
-                    
-                    # [UPDATE] Dynamic Operator Handling
-                    possible_ops = [
-                        "StringEquals", "BooleanEquals", "NumericEquals", 
-                        "NumericGreaterThan", "NumericGreaterThanEquals", 
-                        "NumericLessThan", "NumericLessThanEquals"
-                    ]
-                    
-                    if not raw_choices:
-                        st.info("No conditional rules defined.")
+                if s_typ == "Action":
+                    s_dat["ActionName"] = st.text_input("Action", get_zis_key(s_dat, "ActionName", ""), key=f"act_{sel}")
+                    s_dat["Parameters"] = json.loads(st.text_area("Params", json.dumps(get_zis_key(s_dat, "Parameters", {}), indent=2), key=f"prm_{sel}"))
+                    s_dat["ResultPath"] = st.text_input("ResultPath (e.g. $.myVar)", get_zis_key(s_dat, "ResultPath", ""), key=f"res_{sel}")
 
-                    for i, choice in enumerate(raw_choices):
-                        # Ensure choice is a dict
-                        if not isinstance(choice, dict): continue
+                elif s_typ == "Choice":
+                    s_dat["Default"] = st.selectbox("Default", [k for k in keys if k != sel], index=find_best_match_index([k for k in keys if k != sel], get_zis_key(s_dat, "Default")), key=f"def_{sel}")
+                    chs = get_zis_key(s_dat, "Choices", [])
+                    if not isinstance(chs, list): chs = []
+                    s_dat["Choices"] = chs
+                    for i, ch in enumerate(chs):
+                        with st.expander(f"Rule {i+1}"):
+                            ch["Variable"] = st.text_input("Var", get_zis_key(ch, "Variable", ""), key=f"cv_{i}_{sel}")
+                            
+                            # Operator Logic
+                            ops = ["StringEquals", "BooleanEquals", "NumericEquals", "NumericGreaterThan"]
+                            curr_op = "StringEquals"; curr_val = ""
+                            for op in ops:
+                                if get_zis_key(ch, op) is not None: curr_op = op; curr_val = get_zis_key(ch, op); break
+                            
+                            new_op = st.selectbox("Op", ops, index=ops.index(curr_op), key=f"cop_{i}_{sel}")
+                            new_val = st.text_input("Val", str(curr_val), key=f"cqv_{i}_{sel}")
+                            
+                            # Clean old ops
+                            for op in ops: ch.pop(op, None); ch.pop(op.lower(), None)
+                            
+                            # Set new op
+                            real_val = new_val
+                            if "Numeric" in new_op: 
+                                try: real_val = float(new_val)
+                                except: pass
+                            ch[new_op] = real_val
+                            
+                            ch["Next"] = st.selectbox("GoTo", [k for k in keys if k != sel], index=find_best_match_index([k for k in keys if k != sel], get_zis_key(ch, "Next")), key=f"cn_{i}_{sel}")
+                            if st.button("Del", key=f"cd_{i}_{sel}"): chs.pop(i); force_refresh()
+                    if st.button("Add Rule", key=f"ar_{sel}"): chs.append({"Variable": "$.", "StringEquals": "", "Next": ""}); force_refresh()
 
-                        with st.expander(f"Rule #{i+1}", expanded=False):
-                            # 1. Detect Operator
-                            current_op = "StringEquals" # Default
-                            current_val = ""
-                            
-                            for op in possible_ops:
-                                found = get_zis_key(choice, op)
-                                if found is not None:
-                                    current_op = op
-                                    current_val = found
-                                    break
-                            
-                            # 2. Variable Input
-                            v_val = get_zis_key(choice, "Variable", "$.input...")
-                            nv = st.text_input("Variable", value=v_val, key=f"c_var_{i}{key_suffix}")
-                            if nv != v_val: choice["Variable"] = nv
-                            
-                            # 3. Operator & Value Input
-                            col_op, col_val = st.columns([1, 1])
-                            with col_op:
-                                sel_op = st.selectbox("Condition", possible_ops, index=possible_ops.index(current_op), key=f"c_op_{i}{key_suffix}")
-                            with col_val:
-                                new_val_str = st.text_input("Value", value=str(current_val), key=f"c_val_{i}{key_suffix}")
-                            
-                            # 4. Save Logic (If changed)
-                            if sel_op != current_op or new_val_str != str(current_val):
-                                # Remove old operator
-                                if current_op in choice: del choice[current_op]
-                                if current_op.lower() in choice: del choice[current_op.lower()]
-                                
-                                # Convert new value
-                                final_val = new_val_str
-                                if "Numeric" in sel_op:
-                                    try: 
-                                        if "." in new_val_str: final_val = float(new_val_str)
-                                        else: final_val = int(new_val_str)
-                                    except: pass # Keep string if fail
-                                elif "Boolean" in sel_op:
-                                    final_val = (new_val_str.lower() == "true")
-                                
-                                choice[sel_op] = final_val
-
-                            # 5. Next Step
-                            n_val = get_zis_key(choice, "Next", "")
-                            c_idx = find_best_match_index(opts, n_val)
-                            c_opts = ["(Select a Step)"] + opts if c_idx == -1 else opts
-                            c_final_idx = 0 if c_idx == -1 else c_idx
-                            
-                            sel_choice_next = st.selectbox("Then (Go To)", c_opts, index=c_final_idx, key=f"c_next_{i}{key_suffix}")
-                            if sel_choice_next != "(Select a Step)" and sel_choice_next != n_val:
-                                choice["Next"] = sel_choice_next
-                            
-                            if st.button("🗑️", key=f"del_rule_{i}{key_suffix}"): 
-                                raw_choices.pop(i)
-                                force_refresh()
-
-                    if st.button("➕ Add Rule"):
-                        step_data["Choices"].append({"Variable": "$.input", "StringEquals": "", "Next": opts[0] if opts else ""})
-                        force_refresh()
-
-                st.write("---")
-                c_del, c_save = st.columns(2)
-                with c_del:
-                    if st.button("🗑️ Delete Step"):
-                        del st.session_state["flow_json"]["States"][selected_step]
-                        st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-                        force_refresh()
-                with c_save:
-                    if st.button("💾 Apply Changes", type="primary"):
-                        st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
-                        st.success("Saved!"); force_refresh()
+                if st.button("Save", type="primary", key=f"sv_{sel}"):
+                    st.session_state["editor_content"] = json.dumps(st.session_state["flow_json"], indent=2)
+                    st.success("Saved"); force_refresh()
 
         with c2:
-            st.markdown("### Visual Flow")
-            render_flow_graph(curr, selected_step=selected_step if selected_step != "(Select a Step)" else None)
+            render_flow_graph(curr, selected_step=sel if sel != "(Select)" else None)
 
-# --- TAB 5 & 6 (Deploy & Debug) ---
+# --- TAB 5: DEPLOY (RESTORED) ---
 with t_dep:
     if not st.session_state.get("is_connected"): st.warning("Connect in Settings first.")
     else:
@@ -604,6 +441,7 @@ with t_dep:
                             status.update(label="Failed", state="error"); st.error(r.text)
                     except Exception as e: st.error(str(e))
 
+# --- TAB 6: DEBUGGER (RESTORED) ---
 with t_deb:
     col_input, col_graph = st.columns([1, 1])
     with col_input:
