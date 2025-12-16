@@ -576,10 +576,12 @@ with t_dep:
                         norm_def = normalize_zis_keys(clean_flow_logic(st.session_state["flow_json"]))
                         
                         # [FIXED LOGIC START] ========================
-                        # Auto-fix Action Names to meet ZIS requirements
-                        status.write("Validating and fixing Action Names...")
+                        # Auto-fix Action Names to meet ZIS requirements AND generate missing resources
+                        status.write("Validating Action Names & Generating Placeholders...")
                         final_def = copy.deepcopy(norm_def)
                         states_to_fix = final_def.get("States", {})
+                        
+                        generated_actions = {} # Store auto-generated resource definitions
                         
                         for s_name, s_body in states_to_fix.items():
                             if s_body.get("Type") == "Action":
@@ -589,23 +591,60 @@ with t_dep:
                                 if a_name == "ZIS::Common::Transform":
                                     s_body["ActionName"] = "zis:common:transform:Jq"
                                     
-                                    # [NEW FIX] Validation often fails if 'data' is an object. 
-                                    # Convert to string if necessary.
+                                    # Fix 1b: Convert data object to string if needed
                                     params = s_body.get("Parameters", {})
                                     if "data" in params and isinstance(params["data"], (dict, list)):
                                         params["data"] = json.dumps(params["data"])
 
-                                # Fix 2: Custom Actions missing prefix
+                                # Fix 2: Custom Actions
                                 elif a_name and not a_name.startswith("zis:"):
-                                    # Construct valid ZIS name: zis:{integration}:action:{name}
-                                    new_name = f"zis:{target_int}:action:{a_name}"
-                                    s_body["ActionName"] = new_name
+                                    simple_name = a_name
+                                    new_full_name = f"zis:{target_int}:action:{simple_name}"
+                                    s_body["ActionName"] = new_full_name
+                                    
+                                    # [NEW] Generate Placeholder Resource if it doesn't exist
+                                    # We use the 'simple_name' as the resource key in the bundle
+                                    if simple_name not in generated_actions:
+                                        generated_actions[simple_name] = {
+                                            "type": "ZIS::Action::Http",
+                                            "properties": {
+                                                "name": simple_name,
+                                                "definition": {
+                                                    "method": "POST",
+                                                    "url": f"https://example.com/placeholder/{simple_name}",
+                                                    "headers": {"Content-Type": "application/json"},
+                                                    "body": {
+                                                        "info": f"Auto-generated placeholder for {simple_name}. Update this in ZIS Registry."
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                        # Prepare Bundle Payload
+                        resources_payload = {
+                            res_name: {
+                                "type": "ZIS::Flow",
+                                "properties": {"name": res_name, "definition": final_def}
+                            }
+                        }
+                        
+                        # Inject generated actions into resources
+                        if generated_actions:
+                            status.write(f"⚠️ Auto-generated {len(generated_actions)} placeholder actions.")
+                            resources_payload.update(generated_actions)
+
+                        payload = {
+                            "zis_template_version": "2019-10-14", 
+                            "name": safe_bun, 
+                            "resources": resources_payload
+                        }
                         # [FIXED LOGIC END] ==========================
 
-                        payload = {"zis_template_version": "2019-10-14", "name": safe_bun, "resources": {res_name: {"type": "ZIS::Flow", "properties": {"name": res_name, "definition": final_def}}}}
                         r = requests.post(f"{get_base_url()}/{target_int}/bundles", auth=get_auth(), json=payload, headers={"Content-Type": "application/json"})
                         if r.status_code in [200, 201]:
                             st.balloons(); status.update(label="Deployed!", state="complete"); st.success(f"Deployed {safe_bun} to {target_int}")
+                            if generated_actions:
+                                st.warning(f"Note: {len(generated_actions)} actions were created as placeholders (pointing to example.com). You must update them in the Zendesk Registry for them to work.")
                         else:
                             status.update(label="Failed", state="error"); st.error(r.text)
                     except Exception as e: st.error(str(e))
