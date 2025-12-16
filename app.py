@@ -207,11 +207,15 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
     mermaid_lines = ["flowchart TB"]
     
     # 2. Styles
-    mermaid_lines.append("classDef default fill:#ECECFF,stroke:#939393,stroke-width:1px,rx:5,ry:5;")
-    mermaid_lines.append("classDef selected fill:#FFF59D,stroke:#FBC02D,stroke-width:3px;")
+    # [FIX] GEOMETRY STABILIZATION
+    # All classes now share the exact same stroke-width (2px).
+    # If 'selected' had 3px and 'default' had 1px, selecting a node would change its dimensions,
+    # causing the entire graph to recalculate and "jump". Now, only colors change.
+    mermaid_lines.append("classDef default fill:#ECECFF,stroke:#939393,stroke-width:2px,rx:5,ry:5;")
+    mermaid_lines.append("classDef selected fill:#FFF59D,stroke:#FBC02D,stroke-width:2px;")
     mermaid_lines.append("classDef visited fill:#C8E6C9,stroke:#4CAF50,stroke-width:2px;")
-    mermaid_lines.append("classDef terminal fill:#333,stroke:#333,color:#fff;")
-    mermaid_lines.append("classDef start fill:#4CAF50,stroke:#4CAF50,color:#fff;")
+    mermaid_lines.append("classDef terminal fill:#333,stroke:#333,stroke-width:2px,color:#fff;")
+    mermaid_lines.append("classDef start fill:#4CAF50,stroke:#4CAF50,stroke-width:2px,color:#fff;")
 
     visited = set(highlight_path) if highlight_path else set()
     states = get_zis_key(flow_def, "States", {})
@@ -224,7 +228,6 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
     mermaid_lines.append("END(((End))):::terminal")
 
     # [CRITICAL FIX] Always sort items to ensure string generation is 100% deterministic
-    # This prevents the layout engine from recalculating positions just because dict order changed
     sorted_items = sorted(states.items())
     
     for k, v in sorted_items:
@@ -273,7 +276,6 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
 
     # 5. Apply Classes
     # [CRITICAL FIX] Iterate over SORTED keys here too. 
-    # If we iterate over unsorted dictionary, the resulting string changes hash/order, causing Mermaid re-render jump.
     sorted_keys = sorted(states.keys())
     for k in sorted_keys:
         if k == selected_step:
@@ -284,7 +286,6 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
     mermaid_code = "\n".join(mermaid_lines)
     
     # 6. Render HTML
-    # Added 'flowchart: { curve: 'linear' }' to force straight lines which are more stable in layout than bezier
     html_code = f"""
     <!DOCTYPE html>
     <html>
