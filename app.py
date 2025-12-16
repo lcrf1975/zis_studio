@@ -199,16 +199,17 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [NEW] Mermaid.js Renderer with Enhanced Stability
+# [NEW] Mermaid.js Renderer with Maximum Stability (Class-based)
 def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
-    # 1. Start Construction - Force text Labels for Stability
-    # htmlLabels: false ensures SVG text rendering which is mathematically fixed
-    mermaid_lines = ["%%{init: {'flowchart': {'htmlLabels': false, 'curve': 'linear'}} }%%"]
+    # 1. Init with 'step' curve for rigid layout
+    mermaid_lines = ["%%{init: {'flowchart': {'htmlLabels': false, 'curve': 'step'}} }%%"]
     mermaid_lines.append("flowchart TB")
     
-    # 2. Styles
-    # Defining classes for semantic meaning
+    # 2. Styles (Strict Classes)
+    # Important: stroke-width is 2px for ALL classes to prevent layout shifts on selection
     mermaid_lines.append("classDef default fill:#ECECFF,stroke:#939393,stroke-width:2px,rx:5,ry:5;")
+    mermaid_lines.append("classDef selected fill:#FFF59D,stroke:#FBC02D,stroke-width:2px,rx:5,ry:5;")
+    mermaid_lines.append("classDef visited fill:#C8E6C9,stroke:#4CAF50,stroke-width:2px,rx:5,ry:5;")
     mermaid_lines.append("classDef terminal fill:#333,stroke:#333,stroke-width:2px,color:#fff;")
     mermaid_lines.append("classDef start fill:#4CAF50,stroke:#4CAF50,stroke-width:2px,color:#fff;")
 
@@ -216,19 +217,18 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
     states = get_zis_key(flow_def, "States", {})
     start_step = get_zis_key(flow_def, "StartAt")
     
-    # 3. Nodes Definition
+    # 3. Static Nodes (Structure)
     mermaid_lines.append("START((Start)):::start")
     mermaid_lines.append("END(((End))):::terminal")
 
-    # [CRITICAL] Sort items for deterministic generation
+    # Sort items for deterministic order
     sorted_items = sorted(states.items())
     
+    # Define Nodes FIRST (Default style implicitly)
     for k, v in sorted_items:
         sType = get_zis_key(v, "Type", "Unknown")
-        # Sanitize label for SVG text compatibility
         label = f"{k} [{sType}]"
         
-        # Shapes based on type
         if sType == "Choice":
             shape_open = "{"; shape_close = "}"
         elif sType in ["Succeed", "Fail"]:
@@ -236,9 +236,10 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
         else:
             shape_open = "["; shape_close = "]" 
             
+        # Define node
         mermaid_lines.append(f"{k}{shape_open}\"{label}\"{shape_close}")
 
-    # 4. Connections Definition
+    # 4. Define Connections (Structure)
     if start_step:
         mermaid_lines.append(f"START --> {start_step}")
 
@@ -259,7 +260,7 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
                 if "StringEquals" in c: lbl = f"== {c['StringEquals']}"
                 mermaid_lines.append(f"{k} -- {lbl} --> {c_next}")
 
-        # End Connections logic
+        # End Connections
         sType = get_zis_key(v, "Type", "Unknown")
         is_terminal = sType in ["Succeed", "Fail"]
         is_explicit_end = get_zis_key(v, "End", False)
@@ -267,19 +268,19 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
         if is_explicit_end or is_terminal:
             mermaid_lines.append(f"{k} --> END")
 
-    # 5. Apply Direct Styling for Selection (No class swapping)
-    # Using 'style' command ensures the highest priority and no class-based layout shifts
-    sorted_keys = sorted(states.keys())
-    for k in sorted_keys:
+    # 5. Apply Styles (Painting) - ONLY THIS SECTION CHANGES ON SELECTION
+    # This prevents structure recalculation
+    for k in sorted(states.keys()):
+        # Priority: Selected > Visited > Default
         if k == selected_step:
-            # Highlight Color
-            mermaid_lines.append(f"style {k} fill:#FFF59D,stroke:#FBC02D,stroke-width:2px")
+            mermaid_lines.append(f"class {k} selected;")
         elif k in visited:
-            mermaid_lines.append(f"style {k} fill:#C8E6C9,stroke:#4CAF50,stroke-width:2px")
+            mermaid_lines.append(f"class {k} visited;")
+        else:
+            mermaid_lines.append(f"class {k} default;")
 
     mermaid_code = "\n".join(mermaid_lines)
     
-    # 6. Render HTML
     html_code = f"""
     <!DOCTYPE html>
     <html>
@@ -288,7 +289,7 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
         import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
         mermaid.initialize({{ 
             startOnLoad: true, 
-            theme: 'neutral', 
+            theme: 'base', 
             securityLevel: 'loose'
         }});
     </script>
