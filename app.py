@@ -217,6 +217,9 @@ def test_connection():
 def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
     try:
+        # Use a unique key based on the definition to force re-render when data changes
+        flow_hash = str(hash(json.dumps(flow_def, sort_keys=True)))
+        
         dot = graphviz.Digraph(comment='ZIS Flow')
         dot.attr(rankdir='TB', splines='ortho', bgcolor='transparent')
         dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12')
@@ -257,8 +260,10 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
             if get_zis_key(v, "End"): 
                 dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
                 dot.edge(k, "END")
-        st.graphviz_chart(dot) 
-    except: pass
+        
+        # Only draw if the graph is valid
+        st.graphviz_chart(dot, use_container_width=True) 
+    except Exception as e: st.warning(f"Graph Error: {e}")
 
 # ==========================================
 # 4. MAIN WORKSPACE
@@ -347,36 +352,31 @@ with t_imp:
 with t_code:
     dynamic_key = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
+        # Code Editor Instance
         resp = code_editor(st.session_state.get("editor_content", ""), lang="json", height=500, key=dynamic_key)
         
-        # Capture text changes whenever they happen (blur, enter, change)
-        if resp and resp.get("text"):
+        # [CRITICAL FIX] Capture text changes immediately if they exist in the response
+        if resp and resp.get("text") is not None:
             st.session_state["editor_content"] = resp["text"]
-            # Attempt silent sync so switching tabs works immediately
+            # Attempt silent sync so state is ready for the button click
             try_sync_from_editor(force_ui_update=False)
 
-        # [NEW] Manual Save Button (Decoupled)
         col_btn_save, _ = st.columns([1, 4])
         with col_btn_save:
             if st.button("💾 Salvar e Atualizar Fluxo", type="primary", key="btn_manual_save"):
-                # [FIX] force_ui_update=False prevents the editor from resetting/flashing
-                # This ensures the current text in the browser is respected.
+                # 1. Sync Logic
+                # We use force_ui_update=False to avoid re-formatting/rewriting the user's code
+                # which would cause the cursor to jump or the editor to reset.
                 is_valid, _ = try_sync_from_editor(force_ui_update=False)
                 
                 if is_valid:
-                    st.toast("Código Salvo e Processado!", icon="✅")
-                    # Note: We do NOT call force_refresh() here to avoid unmounting the editor
+                    st.toast("Sucesso! O Visual Designer foi atualizado.", icon="✅")
+                    # 2. Force Refresh: This ensures the 'Visual Designer' tab redraws with new data.
+                    # We add a tiny sleep to ensure the session state propagation completes.
+                    time.sleep(0.1) 
+                    force_refresh()
                 else:
                     st.error("❌ Erro de Sintaxe JSON. Verifique seu código.")
-
-        # [LEGACY] Check for editor's internal submit event (Ctrl+Enter)
-        if resp and resp.get("type") == "submit":
-            is_valid, _ = try_sync_from_editor(force_ui_update=True)
-            if is_valid:
-                st.toast("Saved!", icon="✅")
-                force_refresh()
-            else:
-                st.error("Invalid JSON")
 
 # --- TAB 4: VISUAL DESIGNER ---
 with t_vis:
@@ -385,6 +385,7 @@ with t_vis:
     if not sync_ok:
         st.error("⚠️ **Syntax Error:** The code in the 'Code Editor' tab is invalid JSON. Please fix it before using the Visual Designer.")
     else:
+        st.caption(f"Visualização gerada em: {time.strftime('%H:%M:%S')}")
         c1, c2 = st.columns([1, 2])
         curr = st.session_state["flow_json"]
         states = get_zis_key(curr, "States", {})
