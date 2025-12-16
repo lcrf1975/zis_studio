@@ -210,7 +210,7 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [NEW] CACHED SVG RENDERER WITH IFRAME
+# [NEW] CACHED SVG RENDERER WITH RESPONSIVE SCALING
 def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     if not HAS_GRAPHVIZ: 
         return st.warning("Graphviz not installed. Please add 'graphviz' to requirements.txt")
@@ -221,28 +221,31 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     if st.session_state["cached_svg"] is None or st.session_state["cached_svg_version"] != current_ui_version:
         try:
             dot = graphviz.Digraph(format='svg')
-            dot.attr(rankdir='TB', splines='polyline', bgcolor='transparent')
-            dot.attr(nodesep='0.6', ranksep='0.7')
+            # Compact layout settings
+            dot.attr(rankdir='TB', splines='polyline', compound='true')
+            dot.attr(nodesep='0.5', ranksep='0.6') 
             
             # Use strict attributes for all nodes
             dot.attr('node', shape='box', style='filled,rounded', 
                      fillcolor='#ECECFF', color='#939393', penwidth='2',
-                     fontname='Arial', fontsize='12', margin='0.2')
-            dot.attr('edge', color='#666666', penwidth='1.5', arrowsize='0.8')
+                     fontname='Arial', fontsize='11', margin='0.15')
+            dot.attr('edge', color='#666666', penwidth='1.5', arrowsize='0.7')
 
             states = get_zis_key(flow_def, "States", {})
             start_step = get_zis_key(flow_def, "StartAt")
 
             # Nodes
-            dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", color="#388E3C", width="0.8", fontcolor="white", id="node_START")
-            dot.node("END", "End", shape="doublecircle", fillcolor="#333333", color="#000000", width="0.7", fontcolor="white", id="node_END")
+            dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", color="#388E3C", width="0.6", fontcolor="white", id="node_START", fontsize='10')
+            dot.node("END", "End", shape="doublecircle", fillcolor="#333333", color="#000000", width="0.5", fontcolor="white", id="node_END", fontsize='10')
 
             # Sort items specifically for graph generation consistency
             sorted_items = sorted(states.items())
             
             for k, v in sorted_items:
                 sType = get_zis_key(v, "Type", "Unknown")
-                label = f"{k}\n[{sType}]"
+                # Truncate long names slightly to prevent massive boxes
+                display_k = k if len(k) < 25 else k[:23] + ".."
+                label = f"{display_k}\n[{sType}]"
                 # Use a strictly alphanumeric ID for CSS targeting
                 safe_id = re.sub(r'[^a-zA-Z0-9]', '_', k)
                 dot.node(k, label, id=f"node_{safe_id}")
@@ -254,11 +257,11 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
                 next_step = get_zis_key(v, "Next")
                 if next_step: dot.edge(k, next_step)
                 default_step = get_zis_key(v, "Default")
-                if default_step: dot.edge(k, default_step, label="Default")
+                if default_step: dot.edge(k, default_step, label="Default", fontsize='10', fontcolor='#666')
                 choices = get_zis_key(v, "Choices", [])
                 for c in choices:
                     c_next = get_zis_key(c, "Next")
-                    if c_next: dot.edge(k, c_next, label="Match")
+                    if c_next: dot.edge(k, c_next, label="Match", fontsize='10', fontcolor='#666')
                 
                 sType = get_zis_key(v, "Type", "Unknown")
                 is_explicit_end = get_zis_key(v, "End", False)
@@ -270,9 +273,12 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
             svg_bytes = dot.pipe()
             svg_str = svg_bytes.decode('utf-8')
             
-            # Simple cleanup
+            # [FIX] RESPONSIVENESS HACK
+            # Remove hardcoded width/height from Graphviz output so it scales with CSS
             svg_str = re.sub(r'<\?xml.*?>', '', svg_str)
             svg_str = re.sub(r'<!DOCTYPE.*?>', '', svg_str)
+            svg_str = re.sub(r'width="[\d.]+(pt|in|px)?"', 'width="100%"', svg_str, count=1)
+            svg_str = re.sub(r'height="[\d.]+(pt|in|px)?"', 'height="100%"', svg_str, count=1)
             
             st.session_state["cached_svg"] = svg_str
             st.session_state["cached_svg_version"] = current_ui_version
@@ -290,13 +296,13 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     # Selection Style
     if selected_step:
         safe_sel_id = re.sub(r'[^a-zA-Z0-9]', '_', selected_step)
-        # We target the shapes inside the group. Graphviz creates <g id="node_ID"><polygon ...><text ...></g>
         css_rules.append(f"""
             #node_{safe_sel_id} polygon, #node_{safe_sel_id} path, #node_{safe_sel_id} ellipse {{
                 fill: #FFF59D !important;
                 stroke: #FBC02D !important;
-                stroke-width: 4px !important;
+                stroke-width: 3px !important;
             }}
+            #node_{safe_sel_id} text {{ font-weight: bold; }}
         """)
         
     # Debugger Path Style
@@ -311,22 +317,40 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
                 }}
             """)
 
-    # 4. RENDER IN IFRAME (Isolated Environment prevents 'white screen' conflicts)
-    # Using components.html puts the SVG in its own sandboxed iframe.
-    # This solves the issue of Streamlit/Browser interfering with inline SVG styles.
+    # 4. RENDER IN RESPONSIVE IFRAME
+    # We use a container that centers the SVG and limits its max size to viewport
     full_html = f"""
-    <div style="display: flex; justify-content: center; width: 100%; padding: 20px;">
-        <style>
-            svg {{ width: 100%; height: auto; max-width: 100%; }}
-            { "".join(css_rules) }
-        </style>
-        {final_svg}
-    </div>
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <style>
+        body {{ margin: 0; padding: 0; display: flex; justify-content: center; background: transparent; }}
+        .svg-wrapper {{
+            width: 100%;
+            height: 98vh;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }}
+        svg {{
+            width: auto;
+            height: auto;
+            max-width: 100%;
+            max-height: 100%;
+        }}
+        { "".join(css_rules) }
+    </style>
+    </head>
+    <body>
+        <div class="svg-wrapper">
+            {final_svg}
+        </div>
+    </body>
+    </html>
     """
     
-    # Calculate approximate height to prevent scrolling if possible, min 600px
-    height_est = 600 + (len(get_zis_key(flow_def, "States", {})) * 50)
-    components.html(full_html, height=height_est, scrolling=True)
+    # Set a fixed comfortable height for the Streamlit component
+    components.html(full_html, height=700, scrolling=False)
 
 # ==========================================
 # 4. MAIN WORKSPACE
