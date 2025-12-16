@@ -3,18 +3,14 @@ import json
 import requests
 import time
 import re
+import streamlit.components.v1 as components
 from requests.auth import HTTPBasicAuth
 from jsonpath_ng import parse 
 
 # ==========================================
 # 0. SYSTEM SETUP
 # ==========================================
-try:
-    import graphviz
-    HAS_GRAPHVIZ = True
-except ImportError:
-    HAS_GRAPHVIZ = False
-
+# [CHANGED] We no longer need Graphviz backend
 try:
     from code_editor import code_editor
     HAS_EDITOR = True
@@ -190,7 +186,7 @@ for key in ["zd_subdomain", "zd_email", "zd_token"]:
 from zis_engine import ZISFlowEngine
 
 # ==========================================
-# 3. HELPERS & GRAPH
+# 3. HELPERS & MERMAID RENDERER
 # ==========================================
 def get_auth():
     return HTTPBasicAuth(f"{st.session_state.zd_email}/token", st.session_state.zd_token) if st.session_state.zd_token else None
@@ -204,71 +200,105 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
-    if not HAS_GRAPHVIZ: return st.warning("Graphviz missing")
-    try:
-        dot = graphviz.Digraph(comment='ZIS Flow')
-        
-        # [FIX] STABILITY & CONNECTIONS
-        # 1. 'polyline' is more stable than 'ortho' for interactive apps
-        # 2. 'nodesep' increased to avoid layout cramping
-        dot.attr(layout='dot')
-        dot.attr(rankdir='TB', splines='polyline', nodesep='0.6', ranksep='0.6')
-        dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12', penwidth='1', margin='0.2')
-        dot.attr('edge', color='#888888') 
-        
-        visited = set(highlight_path) if highlight_path else set()
-        states = get_zis_key(flow_def, "States", {})
-        start_step = get_zis_key(flow_def, "StartAt")
+# [NEW] Mermaid.js Renderer
+def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
+    # 1. Start Construction
+    mermaid_lines = ["flowchart TB"]
+    
+    # 2. Styles
+    mermaid_lines.append("classDef default fill:#ECECFF,stroke:#939393,stroke-width:1px,rx:5,ry:5;")
+    mermaid_lines.append("classDef selected fill:#FFF59D,stroke:#FBC02D,stroke-width:3px;")
+    mermaid_lines.append("classDef visited fill:#C8E6C9,stroke:#4CAF50,stroke-width:2px;")
+    mermaid_lines.append("classDef terminal fill:#333,stroke:#333,color:#fff;")
+    mermaid_lines.append("classDef start fill:#4CAF50,stroke:#4CAF50,color:#fff;")
 
-        # --- PHASE 1: DEFINE ALL NODES (Ordered) ---
-        
-        dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled")
-        dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
+    visited = set(highlight_path) if highlight_path else set()
+    states = get_zis_key(flow_def, "States", {})
+    start_step = get_zis_key(flow_def, "StartAt")
+    
+    # 3. Nodes Definition
+    # Start Node
+    mermaid_lines.append("START((Start)):::start")
+    # End Node
+    mermaid_lines.append("END(((End))):::terminal")
 
-        sorted_items = sorted(states.items())
+    # Sort states for deterministic layout
+    sorted_items = sorted(states.items())
+    
+    for k, v in sorted_items:
+        sType = get_zis_key(v, "Type", "Unknown")
+        label = f"{k}<br/>[{sType}]"
         
-        # Draw all state nodes first
-        for k, v in sorted_items:
-            fill = "#e0e0e0"
-            color = "black"
+        # Shapes based on type
+        if sType == "Choice":
+            shape_open = "{"; shape_close = "}"
+        elif sType in ["Succeed", "Fail"]:
+            shape_open = "(["; shape_close = "])" # Stadium
+        else:
+            shape_open = "["; shape_close = "]" # Rect
             
-            if k in visited: fill = "#C8E6C9"
-            if k == selected_step: 
-                fill = "#FFF59D"
-                color = "#FBC02D"
+        mermaid_lines.append(f"{k}{shape_open}\"{label}\"{shape_close}")
 
-            sType = get_zis_key(v, "Type", "Unknown")
-            dot.node(k, f"{k}\n({sType})", fillcolor=fill, color=color)
+    # 4. Connections Definition
+    if start_step:
+        mermaid_lines.append(f"START --> {start_step}")
 
-        # --- PHASE 2: DEFINE ALL EDGES (Ordered) ---
+    for k, v in sorted_items:
+        next_step = get_zis_key(v, "Next")
+        if next_step:
+            mermaid_lines.append(f"{k} --> {next_step}")
         
-        if start_step: 
-            dot.edge("START", start_step)
-
-        for k, v in sorted_items:
-            next_step = get_zis_key(v, "Next")
-            if next_step: dot.edge(k, next_step)
-            
-            default_step = get_zis_key(v, "Default")
-            if default_step: dot.edge(k, default_step, label="Default")
-            
-            choices = get_zis_key(v, "Choices", [])
-            for c in choices:
-                c_next = get_zis_key(c, "Next")
-                if c_next: dot.edge(k, c_next, label="If Match")
-            
-            # [FIX] Connection to END logic
-            # Connect if explicit 'End': True OR if Type is terminal (Succeed/Fail)
-            sType = get_zis_key(v, "Type", "Unknown")
-            is_terminal_type = sType in ["Succeed", "Fail"]
-            is_explicit_end = get_zis_key(v, "End", False)
-            
-            if is_explicit_end or is_terminal_type: 
-                dot.edge(k, "END")
+        default_step = get_zis_key(v, "Default")
+        if default_step:
+            mermaid_lines.append(f"{k} -- Default --> {default_step}")
         
-        st.graphviz_chart(dot, use_container_width=True) 
-    except Exception as e: st.warning(f"Graph Error: {e}")
+        choices = get_zis_key(v, "Choices", [])
+        for i, c in enumerate(choices):
+            c_next = get_zis_key(c, "Next")
+            if c_next:
+                # Use simple label for logic
+                lbl = "Rule"
+                if "StringEquals" in c: lbl = f"== {c['StringEquals']}"
+                mermaid_lines.append(f"{k} -- {lbl} --> {c_next}")
+
+        # End Connections
+        sType = get_zis_key(v, "Type", "Unknown")
+        is_terminal = sType in ["Succeed", "Fail"]
+        is_explicit_end = get_zis_key(v, "End", False)
+        
+        if is_explicit_end or is_terminal:
+            mermaid_lines.append(f"{k} --> END")
+
+    # 5. Apply Classes (Last step to ensure structure is fixed)
+    for k in states.keys():
+        if k == selected_step:
+            mermaid_lines.append(f"class {k} selected;")
+        elif k in visited:
+            mermaid_lines.append(f"class {k} visited;")
+
+    mermaid_code = "\n".join(mermaid_lines)
+    
+    # 6. Render HTML
+    html_code = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({{ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' }});
+    </script>
+    </head>
+    <body>
+        <div class="mermaid">
+            {mermaid_code}
+        </div>
+    </body>
+    </html>
+    """
+    
+    # Height adjustment based on flow complexity
+    dyn_height = 400 + (len(states) * 80)
+    components.html(html_code, height=min(dyn_height, 1000), scrolling=True)
 
 # ==========================================
 # 4. MAIN WORKSPACE
@@ -446,7 +476,7 @@ with t_vis:
                     st.success("Saved"); force_refresh()
 
         with c2:
-            render_flow_graph(curr, selected_step=sel if sel != "(Select)" else None)
+            render_flow_mermaid(curr, selected_step=sel if sel != "(Select)" else None)
 
 with t_dep:
     if not st.session_state.get("is_connected"): st.warning("Connect in Settings first.")
@@ -494,4 +524,4 @@ with t_deb:
     with col_graph:
         st.markdown("### Trace")
         current_path = st.session_state["debug_res"][2] if "debug_res" in st.session_state else None
-        render_flow_graph(st.session_state["flow_json"], current_path)
+        render_flow_mermaid(st.session_state["flow_json"], current_path)
