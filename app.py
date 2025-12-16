@@ -10,7 +10,6 @@ from jsonpath_ng import parse
 # ==========================================
 # 0. SYSTEM SETUP
 # ==========================================
-# [CHANGED] We no longer need Graphviz backend
 try:
     from code_editor import code_editor
     HAS_EDITOR = True
@@ -200,20 +199,16 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [NEW] Mermaid.js Renderer with Strict Ordering
+# [NEW] Mermaid.js Renderer with Enhanced Stability
 def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
-    # 1. Start Construction
-    # 'flowchart TB' is standard Top-Bottom. 
-    mermaid_lines = ["flowchart TB"]
+    # 1. Start Construction - Force text Labels for Stability
+    # htmlLabels: false ensures SVG text rendering which is mathematically fixed
+    mermaid_lines = ["%%{init: {'flowchart': {'htmlLabels': false, 'curve': 'linear'}} }%%"]
+    mermaid_lines.append("flowchart TB")
     
     # 2. Styles
-    # [FIX] GEOMETRY STABILIZATION
-    # All classes now share the exact same stroke-width (2px).
-    # If 'selected' had 3px and 'default' had 1px, selecting a node would change its dimensions,
-    # causing the entire graph to recalculate and "jump". Now, only colors change.
+    # Defining classes for semantic meaning
     mermaid_lines.append("classDef default fill:#ECECFF,stroke:#939393,stroke-width:2px,rx:5,ry:5;")
-    mermaid_lines.append("classDef selected fill:#FFF59D,stroke:#FBC02D,stroke-width:2px;")
-    mermaid_lines.append("classDef visited fill:#C8E6C9,stroke:#4CAF50,stroke-width:2px;")
     mermaid_lines.append("classDef terminal fill:#333,stroke:#333,stroke-width:2px,color:#fff;")
     mermaid_lines.append("classDef start fill:#4CAF50,stroke:#4CAF50,stroke-width:2px,color:#fff;")
 
@@ -222,25 +217,24 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
     start_step = get_zis_key(flow_def, "StartAt")
     
     # 3. Nodes Definition
-    # Start Node
     mermaid_lines.append("START((Start)):::start")
-    # End Node
     mermaid_lines.append("END(((End))):::terminal")
 
-    # [CRITICAL FIX] Always sort items to ensure string generation is 100% deterministic
+    # [CRITICAL] Sort items for deterministic generation
     sorted_items = sorted(states.items())
     
     for k, v in sorted_items:
         sType = get_zis_key(v, "Type", "Unknown")
-        label = f"{k}<br/>[{sType}]"
+        # Sanitize label for SVG text compatibility
+        label = f"{k} [{sType}]"
         
         # Shapes based on type
         if sType == "Choice":
             shape_open = "{"; shape_close = "}"
         elif sType in ["Succeed", "Fail"]:
-            shape_open = "(["; shape_close = "])" # Stadium
+            shape_open = "(["; shape_close = "])" 
         else:
-            shape_open = "["; shape_close = "]" # Rect
+            shape_open = "["; shape_close = "]" 
             
         mermaid_lines.append(f"{k}{shape_open}\"{label}\"{shape_close}")
 
@@ -261,12 +255,11 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
         for i, c in enumerate(choices):
             c_next = get_zis_key(c, "Next")
             if c_next:
-                # Use simple label for logic
                 lbl = "Rule"
                 if "StringEquals" in c: lbl = f"== {c['StringEquals']}"
                 mermaid_lines.append(f"{k} -- {lbl} --> {c_next}")
 
-        # End Connections
+        # End Connections logic
         sType = get_zis_key(v, "Type", "Unknown")
         is_terminal = sType in ["Succeed", "Fail"]
         is_explicit_end = get_zis_key(v, "End", False)
@@ -274,14 +267,15 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
         if is_explicit_end or is_terminal:
             mermaid_lines.append(f"{k} --> END")
 
-    # 5. Apply Classes
-    # [CRITICAL FIX] Iterate over SORTED keys here too. 
+    # 5. Apply Direct Styling for Selection (No class swapping)
+    # Using 'style' command ensures the highest priority and no class-based layout shifts
     sorted_keys = sorted(states.keys())
     for k in sorted_keys:
         if k == selected_step:
-            mermaid_lines.append(f"class {k} selected;")
+            # Highlight Color
+            mermaid_lines.append(f"style {k} fill:#FFF59D,stroke:#FBC02D,stroke-width:2px")
         elif k in visited:
-            mermaid_lines.append(f"class {k} visited;")
+            mermaid_lines.append(f"style {k} fill:#C8E6C9,stroke:#4CAF50,stroke-width:2px")
 
     mermaid_code = "\n".join(mermaid_lines)
     
@@ -295,8 +289,7 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
         mermaid.initialize({{ 
             startOnLoad: true, 
             theme: 'neutral', 
-            securityLevel: 'loose',
-            flowchart: {{ curve: 'linear', htmlLabels: true }} 
+            securityLevel: 'loose'
         }});
     </script>
     <style>
@@ -311,7 +304,6 @@ def render_flow_mermaid(flow_def, highlight_path=None, selected_step=None):
     </html>
     """
     
-    # Height adjustment based on flow complexity
     dyn_height = 400 + (len(states) * 80)
     components.html(html_code, height=min(dyn_height, 1000), scrolling=True)
 
