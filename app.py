@@ -209,11 +209,11 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
     try:
         dot = graphviz.Digraph(comment='ZIS Flow')
         
-        # [FIX] STABILITY OVERHAUL
-        # 1. Use default splines (True/spline) instead of ortho/polyline which are unstable.
-        # 2. Separate NODE definition from EDGE definition completely.
+        # [FIX] STABILITY & CONNECTIONS
+        # 1. 'polyline' is more stable than 'ortho' for interactive apps
+        # 2. 'nodesep' increased to avoid layout cramping
         dot.attr(layout='dot')
-        dot.attr(rankdir='TB', splines='true', nodesep='0.5', ranksep='0.6')
+        dot.attr(rankdir='TB', splines='polyline', nodesep='0.6', ranksep='0.6')
         dot.attr('node', shape='box', style='rounded,filled', fontcolor='black', fontname='Arial', fontsize='12', penwidth='1', margin='0.2')
         dot.attr('edge', color='#888888') 
         
@@ -221,16 +221,14 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
         states = get_zis_key(flow_def, "States", {})
         start_step = get_zis_key(flow_def, "StartAt")
 
-        # --- PHASE 1: DEFINE ALL NODES (Fixed Order) ---
+        # --- PHASE 1: DEFINE ALL NODES (Ordered) ---
         
-        # 1.1 Start Node
         dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", fontcolor="white", width="0.8", style="filled")
-        
-        # 1.2 End Node (Pre-defined for stability)
         dot.node("END", "End", shape="doublecircle", fillcolor="#333333", fontcolor="white", width="0.6", style="filled")
 
-        # 1.3 State Nodes
         sorted_items = sorted(states.items())
+        
+        # Draw all state nodes first
         for k, v in sorted_items:
             fill = "#e0e0e0"
             color = "black"
@@ -243,7 +241,7 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
             sType = get_zis_key(v, "Type", "Unknown")
             dot.node(k, f"{k}\n({sType})", fillcolor=fill, color=color)
 
-        # --- PHASE 2: DEFINE ALL EDGES (Fixed Order) ---
+        # --- PHASE 2: DEFINE ALL EDGES (Ordered) ---
         
         if start_step: 
             dot.edge("START", start_step)
@@ -260,7 +258,13 @@ def render_flow_graph(flow_def, highlight_path=None, selected_step=None):
                 c_next = get_zis_key(c, "Next")
                 if c_next: dot.edge(k, c_next, label="If Match")
             
-            if get_zis_key(v, "End"): 
+            # [FIX] Connection to END logic
+            # Connect if explicit 'End': True OR if Type is terminal (Succeed/Fail)
+            sType = get_zis_key(v, "Type", "Unknown")
+            is_terminal_type = sType in ["Succeed", "Fail"]
+            is_explicit_end = get_zis_key(v, "End", False)
+            
+            if is_explicit_end or is_terminal_type: 
                 dot.edge(k, "END")
         
         st.graphviz_chart(dot, use_container_width=True) 
