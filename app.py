@@ -147,7 +147,7 @@ def try_sync_from_editor(new_content=None, force_ui_update=False):
         content = json.dumps(def_content, indent=2)
         st.session_state["editor_content"] = content
         st.session_state["last_synced_code"] = content
-        return False, "Editor vazio."
+        return False, "Editor Empty."
     
     try:
         cleaned_content = clean_json_string(content)
@@ -166,6 +166,7 @@ def try_sync_from_editor(new_content=None, force_ui_update=False):
         
         st.session_state["last_synced_code"] = content
         st.session_state["ui_render_key"] += 1
+        st.session_state["cached_svg"] = None # Invalidate cache on manual edit
         
         if force_ui_update:
             formatted_json = json.dumps(norm_js, indent=2)
@@ -174,20 +175,19 @@ def try_sync_from_editor(new_content=None, force_ui_update=False):
             st.session_state["editor_key"] += 1
         return True, None
     except json.JSONDecodeError as e:
-        return False, f"Erro JSON na linha {e.lineno}: {e.msg}"
+        return False, f"JSON Error at line {e.lineno}: {e.msg}"
     except Exception as e:
         return False, str(e)
 
 # ==========================================
 # 1. THEME & CONFIG
 # ==========================================
-st.set_page_config(page_title="ZIS Studio Multi-Resource", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="ZIS Studio", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
     header {visibility: hidden;}
     .block-container { padding-top: 1rem; padding-bottom: 2rem; }
-    /* Ensure sidebar is not forcefully hidden if we ever use it, but we are moving to main */
     [data-testid="stSidebar"] { display: none; } 
     [data-testid="collapsedControl"] { display: none; }
 </style>
@@ -195,7 +195,6 @@ st.markdown("""
 
 # [STATE INITIALIZATION]
 if "bundle_resources" not in st.session_state:
-    # Default Template: 1 Flow, 1 Action, 1 Job Spec
     st.session_state["bundle_resources"] = {
         "my_flow": {
             "type": "ZIS::Flow",
@@ -230,7 +229,6 @@ if "bundle_resources" not in st.session_state:
     }
 
 if "selected_resource_key" not in st.session_state: 
-    # Auto select first available if any
     if st.session_state["bundle_resources"]:
         st.session_state["selected_resource_key"] = list(st.session_state["bundle_resources"].keys())[0]
     else:
@@ -278,7 +276,7 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
 
     current_ui_version = st.session_state.get("ui_render_key", 0)
     
-    # 1. GENERATE BASE GRAPH (Only if flow changed)
+    # 1. GENERATE BASE GRAPH (Only if flow changed or cache invalidated)
     if st.session_state["cached_svg"] is None or st.session_state["cached_svg_version"] != current_ui_version:
         try:
             dot = graphviz.Digraph(format='svg')
@@ -399,7 +397,9 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     </html>
     """
     est_height = 200 + (len(get_zis_key(flow_def, "States", {})) * 120)
-    components.html(full_html, height=est_height, scrolling=True)
+    
+    # [FIX] Added 'key' to force iframe refresh when version changes
+    components.html(full_html, height=est_height, scrolling=True, key=f"viz_iframe_{current_ui_version}")
 
 
 # ==========================================
@@ -411,7 +411,7 @@ def render_resource_manager(location_key):
     'location_key' ensures unique widget IDs if this function is called in multiple tabs.
     """
     with st.container(border=True):
-        st.markdown(f"**🗂️ Gerenciador de Recursos**")
+        st.markdown(f"**🗂️ Resource Manager**")
         
         res_map = st.session_state["bundle_resources"]
         res_keys = list(res_map.keys())
@@ -428,7 +428,7 @@ def render_resource_manager(location_key):
                 curr_idx = res_keys.index(curr_val) if curr_val in res_keys else 0
                 
                 selected_key = st.selectbox(
-                    "Selecione o Arquivo", 
+                    "Select File", 
                     res_keys, 
                     index=curr_idx, 
                     key=f"res_sel_{location_key}"
@@ -446,7 +446,7 @@ def render_resource_manager(location_key):
                 st.session_state["last_synced_code"] = formatted_json
                 st.session_state["editor_key"] += 1
                 st.session_state["ui_render_key"] += 1
-                st.session_state["cached_svg"] = None
+                st.session_state["cached_svg"] = None # INVALIDATE CACHE TO FORCE RENDER
                 force_refresh()
 
             current_res = res_map[selected_key]
@@ -457,24 +457,25 @@ def render_resource_manager(location_key):
             
             with col_act:
                 if len(res_keys) > 1:
-                    if st.button("🗑️ Deletar", type="secondary", key=f"del_{location_key}"):
+                    if st.button("🗑️ Delete", type="secondary", key=f"del_{location_key}"):
                         del st.session_state["bundle_resources"][selected_key]
                         st.session_state["selected_resource_key"] = list(st.session_state["bundle_resources"].keys())[0]
+                        st.session_state["cached_svg"] = None
                         force_refresh()
                 else:
                     st.caption("Cannot delete last item")
 
         # Create New Resource Expander
-        with st.expander("➕ Adicionar Novo Recurso"):
+        with st.expander("➕ Add New Resource"):
             c_new_1, c_new_2, c_new_3 = st.columns([2, 2, 1])
             with c_new_1:
-                new_res_name = st.text_input("Nome", key=f"nrn_{location_key}")
+                new_res_name = st.text_input("Name", key=f"nrn_{location_key}")
             with c_new_2:
-                new_res_type = st.selectbox("Tipo", ["ZIS::Flow", "ZIS::Action::Http", "ZIS::JobSpec"], key=f"nrt_{location_key}")
+                new_res_type = st.selectbox("Type", ["ZIS::Flow", "ZIS::Action::Http", "ZIS::JobSpec"], key=f"nrt_{location_key}")
             with c_new_3:
                 st.write("") 
                 st.write("") 
-                if st.button("Criar", key=f"btn_create_{location_key}"):
+                if st.button("Create", key=f"btn_create_{location_key}"):
                     safe_name = new_res_name.lower().strip().replace(" ", "_")
                     if safe_name and safe_name not in res_map:
                         def_def = {}
@@ -490,11 +491,12 @@ def render_resource_manager(location_key):
                             "properties": {"name": safe_name, "definition": def_def}
                         }
                         st.session_state["selected_resource_key"] = safe_name 
-                        st.success(f"Criado: {safe_name}")
+                        st.session_state["cached_svg"] = None
+                        st.success(f"Created: {safe_name}")
                         time.sleep(0.5)
                         force_refresh()
                     else:
-                        st.error("Nome inválido ou duplicado")
+                        st.error("Invalid or duplicate name")
 
 # ==========================================
 # 5. MAIN PAGE
@@ -624,8 +626,8 @@ with t_code:
             current_text = resp.get("text", "")
             st.session_state["editor_content"] = current_text
             ok, err = try_sync_from_editor(new_content=current_text, force_ui_update=False)
-            if ok: st.toast("Salvo com Sucesso!", icon="✅")
-            else: st.error(f"❌ Erro de Sintaxe: {err}")
+            if ok: st.toast("Saved Successfully!", icon="✅")
+            else: st.error(f"❌ Syntax Error: {err}")
 
 with t_vis:
     # RENDER CONTEXTUAL MENU
