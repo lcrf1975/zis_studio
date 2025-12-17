@@ -181,13 +181,15 @@ def try_sync_from_editor(new_content=None, force_ui_update=False):
 # ==========================================
 # 1. THEME & CONFIG
 # ==========================================
-st.set_page_config(page_title="ZIS Studio Multi-Resource", layout="wide", page_icon="⚡", initial_sidebar_state="expanded")
+st.set_page_config(page_title="ZIS Studio Multi-Resource", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
     header {visibility: hidden;}
     .block-container { padding-top: 1rem; padding-bottom: 2rem; }
-    div[data-testid="stSidebar"] { min-width: 250px; }
+    /* Ensure sidebar is not forcefully hidden if we ever use it, but we are moving to main */
+    [data-testid="stSidebar"] { display: none; } 
+    [data-testid="collapsedControl"] { display: none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -228,15 +230,19 @@ if "bundle_resources" not in st.session_state:
     }
 
 if "selected_resource_key" not in st.session_state: 
-    st.session_state["selected_resource_key"] = "my_flow"
+    # Auto select first available if any
+    if st.session_state["bundle_resources"]:
+        st.session_state["selected_resource_key"] = list(st.session_state["bundle_resources"].keys())[0]
+    else:
+        st.session_state["selected_resource_key"] = ""
 
 if "editor_key" not in st.session_state: st.session_state["editor_key"] = 0 
 if "ui_render_key" not in st.session_state: st.session_state["ui_render_key"] = 0
 
 # Initial Editor Content Load
-cur_key = st.session_state["selected_resource_key"]
-cur_def = st.session_state["bundle_resources"][cur_key]["properties"]["definition"]
-if "editor_content" not in st.session_state:
+if st.session_state["selected_resource_key"] and "editor_content" not in st.session_state:
+    cur_key = st.session_state["selected_resource_key"]
+    cur_def = st.session_state["bundle_resources"][cur_key]["properties"]["definition"]
     content = json.dumps(cur_def, indent=2)
     st.session_state["editor_content"] = content
     st.session_state["last_synced_code"] = content
@@ -395,75 +401,93 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     est_height = 200 + (len(get_zis_key(flow_def, "States", {})) * 120)
     components.html(full_html, height=est_height, scrolling=True)
 
+
 # ==========================================
-# 4. SIDEBAR - RESOURCE MANAGER
+# 4. MAIN PAGE & RESOURCE MANAGER (MOVED FROM SIDEBAR)
 # ==========================================
-with st.sidebar:
-    st.header("🗂️ Resource Bundle")
-    st.info("Manage all files in your ZIS Bundle here.")
+st.title("ZIS Studio")
+
+# Top Control Panel - Always Visible
+with st.container(border=True):
+    st.subheader("🗂️ Gerenciador de Recursos (Bundle Resources)")
     
-    # Resource Selector
     res_map = st.session_state["bundle_resources"]
     res_keys = list(res_map.keys())
     
-    selected_key = st.selectbox("Select File", res_keys, index=res_keys.index(st.session_state["selected_resource_key"]) if st.session_state["selected_resource_key"] in res_keys else 0)
+    col_sel, col_type, col_act = st.columns([2, 1, 1])
     
-    if selected_key != st.session_state["selected_resource_key"]:
-        # CHANGE SELECTION
-        st.session_state["selected_resource_key"] = selected_key
-        # Update Content
-        new_def = res_map[selected_key]["properties"]["definition"]
-        formatted_json = json.dumps(new_def, indent=2)
-        st.session_state["editor_content"] = formatted_json
-        st.session_state["last_synced_code"] = formatted_json
-        st.session_state["editor_key"] += 1
-        st.session_state["ui_render_key"] += 1
-        st.session_state["cached_svg"] = None # Invalidate SVG cache
-        force_refresh()
+    with col_sel:
+        # Prevent index error if list is empty
+        if not res_keys:
+             st.warning("No resources. Create one below.")
+             selected_key = None
+        else:
+            curr_idx = res_keys.index(st.session_state["selected_resource_key"]) if st.session_state["selected_resource_key"] in res_keys else 0
+            selected_key = st.selectbox("Selecione o Arquivo", res_keys, index=curr_idx)
 
-    current_res = res_map[selected_key]
-    current_type = current_res.get("type", "Unknown")
-    st.caption(f"Type: **{current_type}**")
-
-    st.divider()
-    
-    with st.expander("➕ Create New Resource"):
-        new_res_name = st.text_input("Name (a-z_0-9)")
-        new_res_type = st.selectbox("Type", ["ZIS::Flow", "ZIS::Action::Http", "ZIS::JobSpec"])
-        if st.button("Create"):
-            safe_name = new_res_name.lower().strip().replace(" ", "_")
-            if safe_name and safe_name not in res_map:
-                # Defaults
-                def_def = {}
-                if new_res_type == "ZIS::Flow":
-                    def_def = {"StartAt": "StartStep", "States": {"StartStep": {"Type": "Pass", "End": True}}}
-                elif new_res_type == "ZIS::Action::Http":
-                    def_def = {"url": "https://", "method": "GET"}
-                elif new_res_type == "ZIS::JobSpec":
-                    def_def = {"event_source": "zendesk", "event_type": "ticket.saved", "target_flow": ""}
-                
-                st.session_state["bundle_resources"][safe_name] = {
-                    "type": new_res_type,
-                    "properties": {"name": safe_name, "definition": def_def}
-                }
-                st.success(f"Created {safe_name}")
-                time.sleep(1)
-                force_refresh()
+    if selected_key:
+        current_res = res_map[selected_key]
+        current_type = current_res.get("type", "Unknown")
+        
+        with col_type:
+            st.info(f"Type:\n**{current_type}**")
+        
+        with col_act:
+            if len(res_keys) > 1:
+                if st.button("🗑️ Deletar", type="secondary"):
+                    del st.session_state["bundle_resources"][selected_key]
+                    st.session_state["selected_resource_key"] = list(st.session_state["bundle_resources"].keys())[0]
+                    force_refresh()
             else:
-                st.error("Invalid or duplicate name")
+                st.caption("Cannot delete last item")
 
-    if len(res_keys) > 1:
-        if st.button("🗑️ Delete Current File"):
-            del st.session_state["bundle_resources"][selected_key]
-            # Reset selection to first available
-            st.session_state["selected_resource_key"] = list(st.session_state["bundle_resources"].keys())[0]
+        # Logic for switching selection
+        if selected_key != st.session_state["selected_resource_key"]:
+            st.session_state["selected_resource_key"] = selected_key
+            new_def = res_map[selected_key]["properties"]["definition"]
+            formatted_json = json.dumps(new_def, indent=2)
+            st.session_state["editor_content"] = formatted_json
+            st.session_state["last_synced_code"] = formatted_json
+            st.session_state["editor_key"] += 1
+            st.session_state["ui_render_key"] += 1
+            st.session_state["cached_svg"] = None
             force_refresh()
 
+    # Create New Resource Expander
+    with st.expander("➕ Adicionar Novo Recurso (Flow, Action, JobSpec)"):
+        c_new_1, c_new_2, c_new_3 = st.columns([2, 2, 1])
+        with c_new_1:
+            new_res_name = st.text_input("Nome do Recurso (ex: my_action)")
+        with c_new_2:
+            new_res_type = st.selectbox("Tipo", ["ZIS::Flow", "ZIS::Action::Http", "ZIS::JobSpec"])
+        with c_new_3:
+            st.write("") # Spacer
+            st.write("") # Spacer
+            if st.button("Criar"):
+                safe_name = new_res_name.lower().strip().replace(" ", "_")
+                if safe_name and safe_name not in res_map:
+                    def_def = {}
+                    if new_res_type == "ZIS::Flow":
+                        def_def = {"StartAt": "StartStep", "States": {"StartStep": {"Type": "Pass", "End": True}}}
+                    elif new_res_type == "ZIS::Action::Http":
+                        def_def = {"url": "https://", "method": "GET"}
+                    elif new_res_type == "ZIS::JobSpec":
+                        def_def = {"event_source": "zendesk", "event_type": "ticket.saved", "target_flow": ""}
+                    
+                    st.session_state["bundle_resources"][safe_name] = {
+                        "type": new_res_type,
+                        "properties": {"name": safe_name, "definition": def_def}
+                    }
+                    st.session_state["selected_resource_key"] = safe_name # Auto switch
+                    st.success(f"Criado: {safe_name}")
+                    time.sleep(0.5)
+                    force_refresh()
+                else:
+                    st.error("Nome inválido ou duplicado")
 
 # ==========================================
-# 5. MAIN WORKSPACE
+# 5. TABS & EDITOR
 # ==========================================
-st.title(f"ZIS Studio: {selected_key}")
 t_set, t_imp, t_code, t_vis, t_dep, t_deb = st.tabs(["⚙️ Settings", "📥 Import", "📝 Code Editor", "🎨 Visual Designer", "🚀 Deploy", "🐞 Debugger"])
 
 with t_set:
@@ -652,7 +676,27 @@ with t_vis:
                     chs = get_zis_key(s_dat, "Choices", [])
                     if not isinstance(chs, list): chs = []
                     s_dat["Choices"] = chs
-                    # (Abbreviated choice logic for brevity - assume same as original file)
+                    for i, ch in enumerate(chs):
+                        with st.expander(f"Rule {i+1}"):
+                            ch["Variable"] = st.text_input("Var", get_zis_key(ch, "Variable", ""), key=f"cv_{i}_{sel}_{ui_key}")
+                            ops = ["StringEquals", "BooleanEquals", "NumericEquals", "NumericGreaterThan"]
+                            curr_op = "StringEquals"; curr_val = ""
+                            for op in ops:
+                                if get_zis_key(ch, op) is not None: curr_op = op; curr_val = get_zis_key(ch, op); break
+                            new_op = st.selectbox("Op", ops, index=ops.index(curr_op), key=f"cop_{i}_{sel}_{ui_key}")
+                            new_val = st.text_input("Val", str(curr_val), key=f"cqv_{i}_{sel}_{ui_key}")
+                            for op in ops: ch.pop(op, None); ch.pop(op.lower(), None)
+                            real_val = new_val
+                            if "Numeric" in new_op: 
+                                try: real_val = float(new_val)
+                                except: pass
+                            ch[new_op] = real_val
+                            
+                            idx_rule_next = find_best_match_index([k for k in keys if k != sel], get_zis_key(ch, "Next"))
+                            final_idx_rule = idx_rule_next if idx_rule_next != -1 else 0
+                            
+                            ch["Next"] = st.selectbox("GoTo", [k for k in keys if k != sel], index=final_idx_rule, key=f"cn_{i}_{sel}_{ui_key}")
+                            if st.button("Del", key=f"cd_{i}_{sel}_{ui_key}"): chs.pop(i); force_refresh()
                     if st.button("Add Rule", key=f"ar_{sel}_{ui_key}"): chs.append({"Variable": "$.", "StringEquals": "", "Next": ""}); force_refresh()
 
                 if st.button("Save Changes", type="primary", key=f"sv_{sel}_{ui_key}"):
@@ -669,13 +713,12 @@ with t_vis:
         st.info("🎨 Action Designer")
         c1, c2 = st.columns(2)
         with c1:
-            current_def["method"] = st.selectbox("Method", ["GET", "POST", "PUT", "DELETE", "PATCH"], index=["GET", "POST", "PUT", "DELETE", "PATCH"].index(current_def.get("method", "GET")))
-            current_def["url"] = st.text_input("URL", value=current_def.get("url", ""))
+            current_def["method"] = st.selectbox("Method", ["GET", "POST", "PUT", "DELETE", "PATCH"], index=["GET", "POST", "PUT", "DELETE", "PATCH"].index(current_def.get("method", "GET")), key=f"mth_{ui_key}")
+            current_def["url"] = st.text_input("URL", value=current_def.get("url", ""), key=f"url_{ui_key}")
         
         st.subheader("Headers")
         hdrs = current_def.get("headers", [])
-        # Simple header editor
-        if not isinstance(hdrs, list): hdrs = [] # normalized
+        if not isinstance(hdrs, list): hdrs = [] 
         for i, h in enumerate(hdrs):
             hc1, hc2 = st.columns(2)
             h["key"] = hc1.text_input(f"Key #{i}", h.get("key", ""), key=f"hk_{i}_{ui_key}")
@@ -692,9 +735,9 @@ with t_vis:
 
     elif current_type == "ZIS::JobSpec":
         st.info("🎨 Job Spec Configuration")
-        current_def["event_source"] = st.text_input("Event Source", current_def.get("event_source", "zendesk"))
-        current_def["event_type"] = st.text_input("Event Type", current_def.get("event_type", "ticket.saved"))
-        current_def["target_flow"] = st.text_input("Target Flow Name (zis:integration:default:flow_name)", current_def.get("target_flow", ""))
+        current_def["event_source"] = st.text_input("Event Source", current_def.get("event_source", "zendesk"), key=f"es_{ui_key}")
+        current_def["event_type"] = st.text_input("Event Type", current_def.get("event_type", "ticket.saved"), key=f"et_{ui_key}")
+        current_def["target_flow"] = st.text_input("Target Flow Name (zis:integration:default:flow_name)", current_def.get("target_flow", ""), key=f"tf_{ui_key}")
         
         if st.button("Save Job Spec", type="primary"):
             new_code = json.dumps(current_def, indent=2)
@@ -729,13 +772,9 @@ with t_dep:
                         res_map = st.session_state["bundle_resources"]
                         
                         for r_key, r_val in res_map.items():
-                            # Deep copy to avoid mutating state during deploy prep
                             r_copy = copy.deepcopy(r_val)
-                            
-                            # Clean up keys for ZIS compliance
                             def_clean = clean_resource_definition(r_copy["properties"]["definition"])
                             r_copy["properties"]["definition"] = def_clean
-                            
                             resources_payload[r_key] = r_copy
 
                         payload = {
@@ -755,7 +794,6 @@ with t_dep:
                     except Exception as e: st.error(str(e))
 
 with t_deb:
-    # DEBUGGER ADAPTIVE LOGIC
     current_res_obj = st.session_state["bundle_resources"][st.session_state["selected_resource_key"]]
     current_type = current_res_obj.get("type")
     current_def = current_res_obj["properties"]["definition"]
@@ -788,8 +826,6 @@ with t_deb:
             st.json(current_def)
         with c2:
             st.markdown("**Test Parameters**")
-            # Create input fields based on placeholders {{$.param}} in definition? 
-            # For simplicity, just a JSON input for dynamic params
             test_params = st.text_area("Parameters (JSON)", '{"id": 123}', height=150)
             
             if st.button("▶️ Test Action", type="primary"):
