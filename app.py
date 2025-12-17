@@ -129,6 +129,27 @@ def sanitize_step(step_data):
                 if target not in step_data: step_data[target] = val
                 del step_data[k]
 
+# [HELPER] Get the most relevant flow to display
+def get_flow_to_render():
+    """
+    Returns the definition and name of the flow to display.
+    Priority:
+    1. The currently selected resource (if it's a flow).
+    2. The first available flow in the bundle.
+    """
+    curr_key = st.session_state.get("selected_resource_key")
+    if curr_key:
+        res = st.session_state["bundle_resources"].get(curr_key)
+        if res and res.get("type") == "ZIS::Flow":
+            return res["properties"]["definition"], curr_key
+
+    # Fallback: Search for any flow
+    for k, v in st.session_state["bundle_resources"].items():
+        if v.get("type") == "ZIS::Flow":
+            return v["properties"]["definition"], k
+    
+    return None, None
+
 # [CRITICAL] Sync Function - UPDATED FOR MULTI-RESOURCE
 def try_sync_from_editor(new_content=None, force_ui_update=False):
     content = new_content if new_content is not None else st.session_state.get("editor_content", "")
@@ -315,11 +336,11 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
                 next_step = get_zis_key(v, "Next")
                 if next_step: dot.edge(k, next_step)
                 default_step = get_zis_key(v, "Default")
-                if default_step: dot.edge(k, default_step, label="Default", fontsize='10', fontcolor='#666')
+                if default_step: dot.edge(k, default_step, label="Default", fontsize='10', fontcolor='#666666')
                 choices = get_zis_key(v, "Choices", [])
                 for c in choices:
                     c_next = get_zis_key(c, "Next")
-                    if c_next: dot.edge(k, c_next, label="Match", fontsize='10', fontcolor='#666')
+                    if c_next: dot.edge(k, c_next, label="Match", fontsize='10', fontcolor='#666666')
                 
                 sType = get_zis_key(v, "Type", "Unknown")
                 is_explicit_end = get_zis_key(v, "End", False)
@@ -642,16 +663,23 @@ with t_vis:
     current_type = current_res_obj.get("type")
     current_def = current_res_obj["properties"]["definition"]
     ui_key = st.session_state["ui_render_key"]
+    
+    # [NEW] Determine Flow to Display (Always show right column)
+    flow_to_show_def, flow_to_show_name = get_flow_to_render()
 
     if not ok: st.error(f"⚠️ Invalid JSON: {err}")
-    elif current_type == "ZIS::Flow":
-        # ==========================================
-        # EXISTING FLOW DESIGNER LOGIC
-        # ==========================================
-        c1, c2 = st.columns([1, 2])
-        states = get_zis_key(current_def, "States", {})
-        keys = list(states.keys())
-        with c1:
+    
+    # 2-COLUMN LAYOUT: Editor (Left) | Visualizer (Right)
+    main_c1, main_c2 = st.columns([1, 1])
+
+    with main_c1:
+        if current_type == "ZIS::Flow":
+            # ==========================================
+            # EXISTING FLOW DESIGNER LOGIC
+            # ==========================================
+            states = get_zis_key(current_def, "States", {})
+            keys = list(states.keys())
+            
             st.subheader("Flow Steps")
             sel = st.selectbox("Step", ["(Select)"] + keys, key=f"step_selector_{ui_key}")
             
@@ -731,46 +759,53 @@ with t_vis:
                     st.session_state["editor_key"] += 1
                     st.success("Saved"); force_refresh()
 
-        with c2:
-            render_flow_static_svg(current_def, selected_step=sel if sel != "(Select)" else None, key_suffix="vis")
-    
-    elif current_type == "ZIS::Action::Http":
-        st.info("🎨 Action Designer")
-        c1, c2 = st.columns(2)
-        with c1:
-            current_def["method"] = st.selectbox("Method", ["GET", "POST", "PUT", "DELETE", "PATCH"], index=["GET", "POST", "PUT", "DELETE", "PATCH"].index(current_def.get("method", "GET")), key=f"mth_{ui_key}")
-            current_def["url"] = st.text_input("URL", value=current_def.get("url", ""), key=f"url_{ui_key}")
-        
-        st.subheader("Headers")
-        hdrs = current_def.get("headers", [])
-        if not isinstance(hdrs, list): hdrs = [] 
-        for i, h in enumerate(hdrs):
-            hc1, hc2 = st.columns(2)
-            h["key"] = hc1.text_input(f"Key #{i}", h.get("key", ""), key=f"hk_{i}_{ui_key}")
-            h["value"] = hc2.text_input(f"Value #{i}", h.get("value", ""), key=f"hv_{i}_{ui_key}")
-        if st.button("Add Header"):
-            hdrs.append({"key": "", "value": ""})
-            current_def["headers"] = hdrs; force_refresh()
+        elif current_type == "ZIS::Action::Http":
+            st.info("🎨 Action Designer")
+            c1, c2 = st.columns(2)
+            with c1:
+                current_def["method"] = st.selectbox("Method", ["GET", "POST", "PUT", "DELETE", "PATCH"], index=["GET", "POST", "PUT", "DELETE", "PATCH"].index(current_def.get("method", "GET")), key=f"mth_{ui_key}")
+                current_def["url"] = st.text_input("URL", value=current_def.get("url", ""), key=f"url_{ui_key}")
+            
+            st.subheader("Headers")
+            hdrs = current_def.get("headers", [])
+            if not isinstance(hdrs, list): hdrs = [] 
+            for i, h in enumerate(hdrs):
+                hc1, hc2 = st.columns(2)
+                h["key"] = hc1.text_input(f"Key #{i}", h.get("key", ""), key=f"hk_{i}_{ui_key}")
+                h["value"] = hc2.text_input(f"Value #{i}", h.get("value", ""), key=f"hv_{i}_{ui_key}")
+            if st.button("Add Header"):
+                hdrs.append({"key": "", "value": ""})
+                current_def["headers"] = hdrs; force_refresh()
 
-        if st.button("Save Action", type="primary"):
-            new_code = json.dumps(current_def, indent=2)
-            st.session_state["editor_content"] = new_code
-            st.session_state["last_synced_code"] = new_code
-            st.success("Saved Action")
+            if st.button("Save Action", type="primary"):
+                new_code = json.dumps(current_def, indent=2)
+                st.session_state["editor_content"] = new_code
+                st.session_state["last_synced_code"] = new_code
+                st.success("Saved Action")
 
-    elif current_type == "ZIS::JobSpec":
-        st.info("🎨 Job Spec Configuration")
-        current_def["event_source"] = st.text_input("Event Source", current_def.get("event_source", "zendesk"), key=f"es_{ui_key}")
-        current_def["event_type"] = st.text_input("Event Type", current_def.get("event_type", "ticket.saved"), key=f"et_{ui_key}")
-        current_def["target_flow"] = st.text_input("Target Flow Name (zis:integration:default:flow_name)", current_def.get("target_flow", ""), key=f"tf_{ui_key}")
-        
-        if st.button("Save Job Spec", type="primary"):
-            new_code = json.dumps(current_def, indent=2)
-            st.session_state["editor_content"] = new_code
-            st.session_state["last_synced_code"] = new_code
-            st.success("Saved Job Spec")
-    else:
-        st.warning(f"Visual Designer not available for {current_type}")
+        elif current_type == "ZIS::JobSpec":
+            st.info("🎨 Job Spec Configuration")
+            current_def["event_source"] = st.text_input("Event Source", current_def.get("event_source", "zendesk"), key=f"es_{ui_key}")
+            current_def["event_type"] = st.text_input("Event Type", current_def.get("event_type", "ticket.saved"), key=f"et_{ui_key}")
+            current_def["target_flow"] = st.text_input("Target Flow Name (zis:integration:default:flow_name)", current_def.get("target_flow", ""), key=f"tf_{ui_key}")
+            
+            if st.button("Save Job Spec", type="primary"):
+                new_code = json.dumps(current_def, indent=2)
+                st.session_state["editor_content"] = new_code
+                st.session_state["last_synced_code"] = new_code
+                st.success("Saved Job Spec")
+        else:
+            st.warning(f"Visual Designer not available for {current_type}")
+
+    # Visualizer Column (Always visible if flow exists)
+    with main_c2:
+        if flow_to_show_def:
+            st.markdown(f"**Viewing Flow: `{flow_to_show_name}`**")
+            # If current resource is Flow, we pass 'sel' (selected step), otherwise None
+            step_to_highlight = sel if (current_type == "ZIS::Flow" and 'sel' in locals() and sel != "(Select)") else None
+            render_flow_static_svg(flow_to_show_def, selected_step=step_to_highlight, key_suffix="vis")
+        else:
+            st.info("No Flows found in this bundle.")
 
 
 with t_dep:
@@ -826,8 +861,12 @@ with t_deb:
     current_res_obj = st.session_state["bundle_resources"][st.session_state["selected_resource_key"]]
     current_type = current_res_obj.get("type")
     current_def = current_res_obj["properties"]["definition"]
+    
+    # [NEW] Determine Flow for Debugging
+    flow_to_show_def, flow_to_show_name = get_flow_to_render()
 
     if current_type == "ZIS::Flow":
+        # ... standard debug view
         col_input, col_graph = st.columns([1, 1])
         with col_input:
             st.markdown("### Flow Simulation")
@@ -848,12 +887,13 @@ with t_deb:
             render_flow_static_svg(current_def, current_path, key_suffix="debug")
             
     elif current_type == "ZIS::Action::Http":
-        st.markdown("### ⚡ Action Tester")
-        c1, c2 = st.columns(2)
-        with c1:
+        # Action Tester on Left, Flow (View Only) on Right
+        col_test, col_flow_view = st.columns([1, 1])
+        
+        with col_test:
+            st.markdown("### ⚡ Action Tester")
             st.markdown("**Action Definition**")
             st.json(current_def)
-        with c2:
             st.markdown("**Test Parameters**")
             test_params = st.text_area("Parameters (JSON)", '{"id": 123}', height=150)
             
@@ -868,5 +908,20 @@ with t_deb:
                     st.error("Invalid JSON parameters")
                 except Exception as e:
                     st.error(str(e))
+        
+        with col_flow_view:
+             if flow_to_show_def:
+                st.markdown(f"**Ref: {flow_to_show_name}**")
+                render_flow_static_svg(flow_to_show_def, key_suffix="debug_ref")
+             else:
+                st.info("No flow to display.")
+
     else:
-        st.info("Debugger not available for Job Specs (Trigger logic only).")
+        # Job Spec (View Only + Flow View)
+        col_job, col_flow_view = st.columns([1, 1])
+        with col_job:
+            st.info("Debugger not available for Job Specs (Trigger logic only).")
+        with col_flow_view:
+             if flow_to_show_def:
+                st.markdown(f"**Ref: {flow_to_show_name}**")
+                render_flow_static_svg(flow_to_show_def, key_suffix="debug_ref")
