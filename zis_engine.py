@@ -2,7 +2,33 @@ import time
 import requests
 import re
 import copy
+import json
 from jsonpath_ng import parse
+
+class ZISActionTester:
+    """
+    Standalone runner for ZIS Actions (ZIS::Action::Http)
+    Allows testing actions without running a full flow.
+    """
+    @staticmethod
+    def execute(action_def, params_input):
+        engine = ZISFlowEngine({}, {}, {}, {}) # Dummy engine for utility methods
+        
+        # Mock a state definition compatible with run_action
+        mock_state_def = {
+            "ActionName": "TestRunner",
+            "Parameters": params_input
+        }
+        
+        # Need to merge definition properties into the params expected by logic
+        # In ZIS Bundle, Action definition has { url, method, etc }
+        # We simulate passing these as if they were parameters to the engine
+        
+        # Merge action definition props (url, method) with user input params
+        combined_params = {**action_def, **params_input}
+        mock_state_def["Parameters"] = combined_params
+
+        return engine.run_action("TEST_ACTION", mock_state_def)
 
 class ZISFlowEngine:
     def __init__(self, flow_definition, input_data, connections, configs):
@@ -96,27 +122,56 @@ class ZISFlowEngine:
 
         self.log(state_name, f"Executing Action: {action_name}", "RUNNING")
         
+        # Merge strategies: 
+        # In a real ZIS flow, the 'definition' of the Custom Action (url, method) is merged with 
+        # the parameters passed in the Flow State.
+        # Here we assume resolved_params contains everything needed (url, method, body, headers).
+        
         url = resolved_params.get("url", "")
         method = resolved_params.get("method", "GET")
         
         # Handle body/payload
         # ZIS often sends 'body' param as the JSON payload
-        payload = resolved_params.get("body")
+        # Or 'requestBody' in Action definitions
+        payload = resolved_params.get("body") or resolved_params.get("requestBody")
         
+        # Ensure payload is dict if possible for logging/requests
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except:
+                pass
+
         if url:
             try:
                 # Basic auth simulation if headers present
                 headers = resolved_params.get("headers", {})
                 
-                response = requests.request(method, url, json=payload, headers=headers)
+                # If headers is a list (ZIS standard), convert to dict for requests
+                req_headers = {}
+                if isinstance(headers, list):
+                    for h in headers:
+                        if "key" in h and "value" in h:
+                            req_headers[h["key"]] = h["value"]
+                elif isinstance(headers, dict):
+                    req_headers = headers
+
+                response = requests.request(method, url, json=payload, headers=req_headers)
                 status_msg = f"API Hit: {url} [{response.status_code}]"
                 
+                # Try parsing response
+                try:
+                    resp_json = response.json()
+                except:
+                    resp_json = {"raw_text": response.text}
+
                 if response.status_code >= 400:
                     self.log(state_name, status_msg, "ERROR")
+                    self.log(state_name, f"Resp: {str(resp_json)[:100]}...", "ERROR")
                 else:
                     self.log(state_name, status_msg, "SUCCESS")
                     
-                return response.json() if response.content else {}
+                return resp_json
             except Exception as e:
                 self.log(state_name, f"Request failed: {str(e)}", "ERROR")
                 return {"error": str(e)}
