@@ -133,9 +133,6 @@ def sanitize_step(step_data):
 def get_flow_to_render():
     """
     Returns the definition and name of the flow to display.
-    Priority:
-    1. The currently selected resource (if it's a flow).
-    2. The first available flow in the bundle.
     """
     curr_key = st.session_state.get("selected_resource_key")
     if curr_key:
@@ -428,98 +425,132 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
 # ==========================================
 # 4. REUSABLE RESOURCE MANAGER COMPONENT
 # ==========================================
-def render_resource_manager(location_key):
+def handle_resource_change(widget_key):
+    """Callback to update global state immediately when selectbox changes."""
+    new_value = st.session_state[widget_key]
+    st.session_state["selected_resource_key"] = new_value
+    
+    # Update Editor Content immediately
+    res_map = st.session_state["bundle_resources"]
+    if new_value in res_map:
+        new_def = res_map[new_value]["properties"]["definition"]
+        formatted_json = json.dumps(new_def, indent=2)
+        st.session_state["editor_content"] = formatted_json
+        st.session_state["last_synced_code"] = formatted_json
+        st.session_state["editor_key"] += 1
+        st.session_state["ui_render_key"] += 1
+        st.session_state["cached_svg"] = None
+
+def render_resource_manager(location_key, allowed_types=None):
     """
-    Renders the Resource Manager UI. 
-    'location_key' ensures unique widget IDs if this function is called in multiple tabs.
+    Renders the Resource Manager UI.
+    allowed_types: List of strings (e.g., ["ZIS::Flow"]). If None, shows all.
     """
     with st.container(border=True):
         st.markdown(f"**🗂️ Resource Manager**")
         
         res_map = st.session_state["bundle_resources"]
-        res_keys = list(res_map.keys())
+        
+        # Filter keys if allowed_types is set
+        if allowed_types:
+            res_keys = [k for k, v in res_map.items() if v.get("type") in allowed_types]
+        else:
+            res_keys = list(res_map.keys())
         
         col_sel, col_type, col_act = st.columns([2, 1, 1])
         
         with col_sel:
             if not res_keys:
-                 st.warning("No resources. Create one below.")
+                 st.warning("No matching resources.")
                  selected_key = None
             else:
                 # Sync logic: Ensure the selectbox reflects the global session state
                 curr_val = st.session_state.get("selected_resource_key")
-                curr_idx = res_keys.index(curr_val) if curr_val in res_keys else 0
                 
+                # If current global value is not in filtered list (e.g. Action selected, but we are in Debugger)
+                if curr_val not in res_keys:
+                    curr_idx = 0
+                    # IMPORTANT: If we are forced to switch (e.g. Debugger), update global state immediately?
+                    # Or just select the first one visually? 
+                    # Better to default to first one visually, and let user confirm selection implicitly.
+                    # But for robustness, we use the first one available in this view.
+                else:
+                    curr_idx = res_keys.index(curr_val)
+                
+                widget_key = f"res_sel_{location_key}"
                 selected_key = st.selectbox(
                     "Select File", 
                     res_keys, 
                     index=curr_idx, 
-                    key=f"res_sel_{location_key}"
+                    key=widget_key,
+                    on_change=handle_resource_change,
+                    args=(widget_key,)
                 )
 
         if selected_key:
-            # Sync Global State if Widget Changed
-            if selected_key != st.session_state.get("selected_resource_key"):
-                st.session_state["selected_resource_key"] = selected_key
+            # If the widget logic didn't trigger yet (e.g. first load of filtered view), 
+            # or if we need to display info about the *visually selected* key
+            current_res = res_map.get(selected_key)
+            if current_res:
+                current_type = current_res.get("type", "Unknown")
+                with col_type:
+                    st.info(f"Type:\n**{current_type}**")
                 
-                # Update Content for Editor
-                new_def = res_map[selected_key]["properties"]["definition"]
-                formatted_json = json.dumps(new_def, indent=2)
-                st.session_state["editor_content"] = formatted_json
-                st.session_state["last_synced_code"] = formatted_json
-                st.session_state["editor_key"] += 1
-                st.session_state["ui_render_key"] += 1
-                st.session_state["cached_svg"] = None # INVALIDATE CACHE TO FORCE RENDER
-                force_refresh()
-
-            current_res = res_map[selected_key]
-            current_type = current_res.get("type", "Unknown")
-            
-            with col_type:
-                st.info(f"Type:\n**{current_type}**")
-            
-            with col_act:
-                if len(res_keys) > 1:
-                    if st.button("🗑️ Delete", type="secondary", key=f"del_{location_key}"):
-                        del st.session_state["bundle_resources"][selected_key]
-                        st.session_state["selected_resource_key"] = list(st.session_state["bundle_resources"].keys())[0]
-                        st.session_state["cached_svg"] = None
-                        force_refresh()
-                else:
-                    st.caption("Cannot delete last item")
-
-        # Create New Resource Expander
-        with st.expander("➕ Add New Resource"):
-            c_new_1, c_new_2, c_new_3 = st.columns([2, 2, 1])
-            with c_new_1:
-                new_res_name = st.text_input("Name", key=f"nrn_{location_key}")
-            with c_new_2:
-                new_res_type = st.selectbox("Type", ["ZIS::Flow", "ZIS::Action::Http", "ZIS::JobSpec"], key=f"nrt_{location_key}")
-            with c_new_3:
-                st.write("") 
-                st.write("") 
-                if st.button("Create", key=f"btn_create_{location_key}"):
-                    safe_name = new_res_name.lower().strip().replace(" ", "_")
-                    if safe_name and safe_name not in res_map:
-                        def_def = {}
-                        if new_res_type == "ZIS::Flow":
-                            def_def = {"StartAt": "StartStep", "States": {"StartStep": {"Type": "Pass", "End": True}}}
-                        elif new_res_type == "ZIS::Action::Http":
-                            def_def = {"url": "https://", "method": "GET"}
-                        elif new_res_type == "ZIS::JobSpec":
-                            def_def = {"event_source": "zendesk", "event_type": "ticket.saved", "target_flow": ""}
-                        
-                        st.session_state["bundle_resources"][safe_name] = {
-                            "type": new_res_type,
-                            "properties": {"name": safe_name, "definition": def_def}
-                        }
-                        st.session_state["selected_resource_key"] = safe_name 
-                        st.session_state["cached_svg"] = None
-                        st.success(f"Created: {safe_name}")
-                        time.sleep(0.5)
-                        force_refresh()
+                with col_act:
+                    if len(list(res_map.keys())) > 1: # Allow delete if total resources > 1
+                        if st.button("🗑️ Delete", type="secondary", key=f"del_{location_key}"):
+                            del st.session_state["bundle_resources"][selected_key]
+                            # Fallback selection
+                            rem_keys = list(st.session_state["bundle_resources"].keys())
+                            if rem_keys:
+                                st.session_state["selected_resource_key"] = rem_keys[0]
+                                handle_resource_change(widget_key) # Mock call to update content
+                            st.session_state["cached_svg"] = None
+                            force_refresh()
                     else:
-                        st.error("Invalid or duplicate name")
+                        st.caption("Cannot delete last item")
+
+        # Create New Resource Expander (Only show if not in restricted mode, or allow creation of relevant types)
+        # If allowed_types is restricted (Debugger), maybe hide creation or restrict it too?
+        # User asked for Resource Manager in Debugger to select Flows. Creation usually happens in Editor/Designer.
+        # We'll hide creation in Debugger to keep it clean, or keep it consistent. Let's keep it but simplified.
+        
+        if not allowed_types: # Show full creator in Editor/Designer
+            with st.expander("➕ Add New Resource"):
+                c_new_1, c_new_2, c_new_3 = st.columns([2, 2, 1])
+                with c_new_1:
+                    new_res_name = st.text_input("Name", key=f"nrn_{location_key}")
+                with c_new_2:
+                    new_res_type = st.selectbox("Type", ["ZIS::Flow", "ZIS::Action::Http", "ZIS::JobSpec"], key=f"nrt_{location_key}")
+                with c_new_3:
+                    st.write("") 
+                    st.write("") 
+                    if st.button("Create", key=f"btn_create_{location_key}"):
+                        safe_name = new_res_name.lower().strip().replace(" ", "_")
+                        if safe_name and safe_name not in res_map:
+                            def_def = {}
+                            if new_res_type == "ZIS::Flow":
+                                def_def = {"StartAt": "StartStep", "States": {"StartStep": {"Type": "Pass", "End": True}}}
+                            elif new_res_type == "ZIS::Action::Http":
+                                def_def = {"url": "https://", "method": "GET"}
+                            elif new_res_type == "ZIS::JobSpec":
+                                def_def = {"event_source": "zendesk", "event_type": "ticket.saved", "target_flow": ""}
+                            
+                            st.session_state["bundle_resources"][safe_name] = {
+                                "type": new_res_type,
+                                "properties": {"name": safe_name, "definition": def_def}
+                            }
+                            st.session_state["selected_resource_key"] = safe_name 
+                            # Update content manually
+                            formatted_json = json.dumps(def_def, indent=2)
+                            st.session_state["editor_content"] = formatted_json
+                            st.session_state["cached_svg"] = None
+                            
+                            st.success(f"Created: {safe_name}")
+                            time.sleep(0.5)
+                            force_refresh()
+                        else:
+                            st.error("Invalid or duplicate name")
 
 # ==========================================
 # 5. MAIN PAGE
@@ -854,75 +885,44 @@ with t_dep:
                     except Exception as e: st.error(str(e))
 
 with t_deb:
-    # Removed Resource Manager from Debugger as requested
-    st.markdown("### 🐞 Debugger")
+    # RENDER CONTEXTUAL MENU with FILTER (Only Flows)
+    render_resource_manager("deb_tab", allowed_types=["ZIS::Flow"])
+    st.divider()
     
-    current_res_obj = st.session_state["bundle_resources"][st.session_state["selected_resource_key"]]
-    current_type = current_res_obj.get("type")
-    current_def = current_res_obj["properties"]["definition"]
+    current_res_obj = st.session_state["bundle_resources"].get(st.session_state["selected_resource_key"])
     
-    st.info(f"Currently Debugging: **{st.session_state['selected_resource_key']}** ({current_type})")
+    # Safety Check: If current selection is NOT a flow (e.g. user selected Action in editor then clicked Debugger),
+    # We should handle it nicely. The selector above will probably look empty or mismatch.
+    # We should prioritize showing the 'current_res_obj' IF it matches the allowed type.
     
-    # [NEW] Determine Flow for Debugging
-    flow_to_show_def, flow_to_show_name = get_flow_to_render()
-
-    if current_type == "ZIS::Flow":
-        # ... standard debug view
-        col_input, col_graph = st.columns([1, 1])
-        with col_input:
-            st.markdown("### Flow Simulation")
-            inp = st.text_area("JSON Input", '{"ticket": {"id": 123}}', height=200, key="debug_input")
-            if st.button("▶️ Run Simulation", type="primary"):
-                eng = ZISFlowEngine(normalize_zis_keys(current_def), json.loads(inp), {}, {})
-                logs, ctx, path = eng.run()
-                st.session_state["debug_res"] = (logs, ctx, path)
-            st.divider()
-            if "debug_res" in st.session_state:
-                logs, ctx, path = st.session_state["debug_res"]
-                with st.expander("Logs"):
-                    for l in logs: st.text(l)
-                with st.expander("Context"): st.json(ctx)
-        with col_graph:
-            st.markdown("### Trace")
-            current_path = st.session_state["debug_res"][2] if "debug_res" in st.session_state else None
-            render_flow_static_svg(current_def, current_path, key_suffix="debug")
-            
-    elif current_type == "ZIS::Action::Http":
-        # Action Tester on Left, Flow (View Only) on Right
-        col_test, col_flow_view = st.columns([1, 1])
+    # Re-fetch current details
+    if current_res_obj:
+        current_type = current_res_obj.get("type")
+        current_def = current_res_obj["properties"]["definition"]
         
-        with col_test:
-            st.markdown("### ⚡ Action Tester")
-            st.markdown("**Action Definition**")
-            st.json(current_def)
-            st.markdown("**Test Parameters**")
-            test_params = st.text_area("Parameters (JSON)", '{"id": 123}', height=150)
-            
-            if st.button("▶️ Test Action", type="primary"):
-                try:
-                    p_json = json.loads(test_params)
-                    with st.spinner("Executing..."):
-                        res = ZISActionTester.execute(current_def, p_json)
-                    st.subheader("Response")
-                    st.json(res)
-                except json.JSONDecodeError:
-                    st.error("Invalid JSON parameters")
-                except Exception as e:
-                    st.error(str(e))
-        
-        with col_flow_view:
-             if flow_to_show_def:
-                st.markdown(f"**Ref: {flow_to_show_name}**")
-                render_flow_static_svg(flow_to_show_def, key_suffix="debug_ref")
-             else:
-                st.info("No flow to display.")
+        st.info(f"Currently Debugging: **{st.session_state['selected_resource_key']}**")
 
+        if current_type == "ZIS::Flow":
+            # ... standard debug view
+            col_input, col_graph = st.columns([1, 1])
+            with col_input:
+                st.markdown("### Flow Simulation")
+                inp = st.text_area("JSON Input", '{"ticket": {"id": 123}}', height=200, key="debug_input")
+                if st.button("▶️ Run Simulation", type="primary"):
+                    eng = ZISFlowEngine(normalize_zis_keys(current_def), json.loads(inp), {}, {})
+                    logs, ctx, path = eng.run()
+                    st.session_state["debug_res"] = (logs, ctx, path)
+                st.divider()
+                if "debug_res" in st.session_state:
+                    logs, ctx, path = st.session_state["debug_res"]
+                    with st.expander("Logs"):
+                        for l in logs: st.text(l)
+                    with st.expander("Context"): st.json(ctx)
+            with col_graph:
+                st.markdown("### Trace")
+                current_path = st.session_state["debug_res"][2] if "debug_res" in st.session_state else None
+                render_flow_static_svg(current_def, current_path, key_suffix="debug")
+        else:
+            st.warning("Please select a **ZIS::Flow** resource from the dropdown above to debug.")
     else:
-        # Job Spec (View Only + Flow View)
-        col_job, col_flow_view = st.columns([1, 1])
-        with col_job:
-            st.info("Debugger not available for Job Specs (Trigger logic only).")
-        with col_flow_view:
-             if flow_to_show_def:
-                st.markdown(f"**Ref: {flow_to_show_name}**")
-                render_flow_static_svg(flow_to_show_def, key_suffix="debug_ref")
+        st.warning("No resource selected.")
