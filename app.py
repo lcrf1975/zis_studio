@@ -854,13 +854,14 @@ with t_dep:
                     except Exception as e: st.error(str(e))
 
 with t_deb:
-    # RENDER CONTEXTUAL MENU
-    render_resource_manager("deb_tab")
-    st.divider()
-
+    # Removed Resource Manager from Debugger as requested
+    st.markdown("### 🐞 Debugger")
+    
     current_res_obj = st.session_state["bundle_resources"][st.session_state["selected_resource_key"]]
     current_type = current_res_obj.get("type")
     current_def = current_res_obj["properties"]["definition"]
+    
+    st.info(f"Currently Debugging: **{st.session_state['selected_resource_key']}** ({current_type})")
     
     # [NEW] Determine Flow for Debugging
     flow_to_show_def, flow_to_show_name = get_flow_to_render()
