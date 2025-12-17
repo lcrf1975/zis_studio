@@ -369,8 +369,11 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
             """)
 
     # 4. RENDER IN RESPONSIVE CONTAINER
+    # [CRITICAL FIX] Removed 'key' argument which caused TypeError.
+    # Injected hidden comment with version/suffix to force Streamlit to see it as new content.
     full_html = f"""
     <!DOCTYPE html>
+    <!-- version: {current_ui_version} | context: {key_suffix} -->
     <html>
     <head>
     <style>
@@ -398,8 +401,7 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
     """
     est_height = 200 + (len(get_zis_key(flow_def, "States", {})) * 120)
     
-    # [FIX] Added key_suffix to prevent duplicates across tabs
-    components.html(full_html, height=est_height, scrolling=True, key=f"viz_iframe_{current_ui_version}_{key_suffix}")
+    components.html(full_html, height=est_height, scrolling=True)
 
 
 # ==========================================
