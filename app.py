@@ -5,6 +5,7 @@ import time
 import re
 import base64
 import copy
+import hashlib
 import streamlit.components.v1 as components
 from requests.auth import HTTPBasicAuth
 from jsonpath_ng import parse 
@@ -184,7 +185,9 @@ def try_sync_from_editor(new_content=None, force_ui_update=False):
         
         st.session_state["last_synced_code"] = content
         st.session_state["ui_render_key"] += 1
-        st.session_state["cached_svg"] = None # Invalidate cache on manual edit
+        
+        # Note: We don't invalidate cached_svg here manually anymore because
+        # the render function now uses a hash check.
         
         if force_ui_update:
             formatted_json = json.dumps(norm_js, indent=2)
@@ -263,9 +266,9 @@ if st.session_state["selected_resource_key"] and "editor_content" not in st.sess
     st.session_state["editor_content"] = content
     st.session_state["last_synced_code"] = content
 
-# Cache for SVG
+# Cache for SVG (Global Store)
 if "cached_svg" not in st.session_state: st.session_state["cached_svg"] = None
-if "cached_svg_version" not in st.session_state: st.session_state["cached_svg_version"] = -1
+if "cached_svg_hash" not in st.session_state: st.session_state["cached_svg_hash"] = ""
 
 for key in ["zd_subdomain", "zd_email", "zd_token"]:
     if key not in st.session_state: st.session_state[key] = ""
@@ -287,15 +290,18 @@ def test_connection():
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
-# [NEW] CACHED SVG RENDERER - NATURAL SIZE
+# [NEW] CACHED SVG RENDERER - CONTENT HASH BASED
 def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, key_suffix="default"):
     if not HAS_GRAPHVIZ: 
         return st.warning("Graphviz not installed. Please add 'graphviz' to requirements.txt")
 
-    current_ui_version = st.session_state.get("ui_render_key", 0)
+    # Generate Hash of the content to determine if we need to redraw
+    # We include path/selection in the hash so highlighting triggers redraw
+    content_sig = json.dumps(flow_def, sort_keys=True) + str(highlight_path) + str(selected_step)
+    current_hash = hashlib.md5(content_sig.encode()).hexdigest()
     
-    # 1. GENERATE BASE GRAPH (Only if flow changed or cache invalidated)
-    if st.session_state["cached_svg"] is None or st.session_state["cached_svg_version"] != current_ui_version:
+    # 1. GENERATE BASE GRAPH (Only if hash changed)
+    if st.session_state["cached_svg"] is None or st.session_state["cached_svg_hash"] != current_hash:
         try:
             dot = graphviz.Digraph(format='svg')
             # Settings for better spacing
@@ -353,8 +359,9 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
             svg_str = re.sub(r'<\?xml.*?>', '', svg_str)
             svg_str = re.sub(r'<!DOCTYPE.*?>', '', svg_str)
             
+            # Update Cache
             st.session_state["cached_svg"] = svg_str
-            st.session_state["cached_svg_version"] = current_ui_version
+            st.session_state["cached_svg_hash"] = current_hash
             
         except Exception as e:
             st.error(f"Render Error: {e}")
@@ -377,21 +384,21 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
         
     if highlight_path:
         for step in highlight_path:
+            # Simple sanitization to match node IDs
+            safe_step_id = re.sub(r'[^a-zA-Z0-9]', '_', step)
             if step == selected_step: continue
-            safe_id = re.sub(r'[^a-zA-Z0-9]', '_', step)
             css_rules.append(f"""
-                #node_{safe_id} polygon, #node_{safe_id} path, #node_{safe_id} ellipse {{
+                #node_{safe_step_id} polygon, #node_{safe_step_id} path, #node_{safe_step_id} ellipse {{
                     fill: #C8E6C9 !important;
                     stroke: #4CAF50 !important;
                 }}
             """)
 
     # 4. RENDER IN RESPONSIVE CONTAINER
-    # [CRITICAL FIX] Removed 'key' argument which caused TypeError.
-    # Injected hidden comment with version/suffix to force Streamlit to see it as new content.
+    # We include the hash in the comment to force HTML update if content changed
     full_html = f"""
     <!DOCTYPE html>
-    <!-- version: {current_ui_version} | context: {key_suffix} -->
+    <!-- hash: {current_hash} | context: {key_suffix} -->
     <html>
     <head>
     <style>
@@ -430,6 +437,10 @@ def handle_resource_change(widget_key):
     new_value = st.session_state[widget_key]
     st.session_state["selected_resource_key"] = new_value
     
+    # [CRITICAL FIX] Clear debug trace when switching files to avoid mismatched highlights
+    if "debug_res" in st.session_state:
+        del st.session_state["debug_res"]
+    
     # Update Editor Content immediately
     res_map = st.session_state["bundle_resources"]
     if new_value in res_map:
@@ -439,7 +450,7 @@ def handle_resource_change(widget_key):
         st.session_state["last_synced_code"] = formatted_json
         st.session_state["editor_key"] += 1
         st.session_state["ui_render_key"] += 1
-        st.session_state["cached_svg"] = None
+        # No need to wipe cached_svg manually, hash check handles it
 
 def render_resource_manager(location_key, allowed_types=None):
     """
@@ -457,7 +468,8 @@ def render_resource_manager(location_key, allowed_types=None):
         else:
             res_keys = list(res_map.keys())
         
-        col_sel, col_type, col_act = st.columns([2, 1, 1])
+        # [FIX] Better column spacing for layout alignment
+        col_sel, col_type, col_act = st.columns([3, 1, 1])
         
         with col_sel:
             if not res_keys:
@@ -467,13 +479,8 @@ def render_resource_manager(location_key, allowed_types=None):
                 # Sync logic: Ensure the selectbox reflects the global session state
                 curr_val = st.session_state.get("selected_resource_key")
                 
-                # If current global value is not in filtered list (e.g. Action selected, but we are in Debugger)
                 if curr_val not in res_keys:
                     curr_idx = 0
-                    # IMPORTANT: If we are forced to switch (e.g. Debugger), update global state immediately?
-                    # Or just select the first one visually? 
-                    # Better to default to first one visually, and let user confirm selection implicitly.
-                    # But for robustness, we use the first one available in this view.
                 else:
                     curr_idx = res_keys.index(curr_val)
                 
@@ -488,34 +495,30 @@ def render_resource_manager(location_key, allowed_types=None):
                 )
 
         if selected_key:
-            # If the widget logic didn't trigger yet (e.g. first load of filtered view), 
-            # or if we need to display info about the *visually selected* key
             current_res = res_map.get(selected_key)
             if current_res:
                 current_type = current_res.get("type", "Unknown")
+                
+                # [FIX] Vertical alignment for info and button
                 with col_type:
-                    st.info(f"Type:\n**{current_type}**")
+                    st.write("") # Spacer
+                    st.info(f"**{current_type.replace('ZIS::', '')}**")
                 
                 with col_act:
-                    if len(list(res_map.keys())) > 1: # Allow delete if total resources > 1
-                        if st.button("🗑️ Delete", type="secondary", key=f"del_{location_key}"):
+                    st.write("") # Spacer
+                    st.write("") # Spacer
+                    if len(list(res_map.keys())) > 1: 
+                        if st.button("🗑️ Del", type="secondary", key=f"del_{location_key}"):
                             del st.session_state["bundle_resources"][selected_key]
-                            # Fallback selection
                             rem_keys = list(st.session_state["bundle_resources"].keys())
                             if rem_keys:
                                 st.session_state["selected_resource_key"] = rem_keys[0]
-                                handle_resource_change(widget_key) # Mock call to update content
-                            st.session_state["cached_svg"] = None
+                                handle_resource_change(widget_key) 
                             force_refresh()
                     else:
-                        st.caption("Cannot delete last item")
+                        st.caption("Locked")
 
-        # Create New Resource Expander (Only show if not in restricted mode, or allow creation of relevant types)
-        # If allowed_types is restricted (Debugger), maybe hide creation or restrict it too?
-        # User asked for Resource Manager in Debugger to select Flows. Creation usually happens in Editor/Designer.
-        # We'll hide creation in Debugger to keep it clean, or keep it consistent. Let's keep it but simplified.
-        
-        if not allowed_types: # Show full creator in Editor/Designer
+        if not allowed_types: 
             with st.expander("➕ Add New Resource"):
                 c_new_1, c_new_2, c_new_3 = st.columns([2, 2, 1])
                 with c_new_1:
@@ -541,10 +544,8 @@ def render_resource_manager(location_key, allowed_types=None):
                                 "properties": {"name": safe_name, "definition": def_def}
                             }
                             st.session_state["selected_resource_key"] = safe_name 
-                            # Update content manually
                             formatted_json = json.dumps(def_def, indent=2)
                             st.session_state["editor_content"] = formatted_json
-                            st.session_state["cached_svg"] = None
                             
                             st.success(f"Created: {safe_name}")
                             time.sleep(0.5)
@@ -649,7 +650,6 @@ with t_imp:
                         st.session_state["last_synced_code"] = formatted_js
                         st.session_state["editor_key"] += 1
                         st.session_state["ui_render_key"] += 1
-                        st.session_state["cached_svg"] = None
                         
                         st.toast("Bundle Loaded!", icon="🎉"); time.sleep(0.5); force_refresh()
                     else:
@@ -920,6 +920,7 @@ with t_deb:
                     with st.expander("Context"): st.json(ctx)
             with col_graph:
                 st.markdown("### Trace")
+                # Ensure path is valid and step still exists
                 current_path = st.session_state["debug_res"][2] if "debug_res" in st.session_state else None
                 render_flow_static_svg(current_def, current_path, key_suffix="debug")
         else:
