@@ -270,7 +270,7 @@ def test_connection():
     except Exception as e: return False, f"{str(e)}"
 
 # [NEW] CACHED SVG RENDERER - NATURAL SIZE
-def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
+def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, key_suffix="default"):
     if not HAS_GRAPHVIZ: 
         return st.warning("Graphviz not installed. Please add 'graphviz' to requirements.txt")
 
@@ -398,8 +398,8 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None):
     """
     est_height = 200 + (len(get_zis_key(flow_def, "States", {})) * 120)
     
-    # [FIX] Added 'key' to force iframe refresh when version changes
-    components.html(full_html, height=est_height, scrolling=True, key=f"viz_iframe_{current_ui_version}")
+    # [FIX] Added key_suffix to prevent duplicates across tabs
+    components.html(full_html, height=est_height, scrolling=True, key=f"viz_iframe_{current_ui_version}_{key_suffix}")
 
 
 # ==========================================
@@ -730,7 +730,7 @@ with t_vis:
                     st.success("Saved"); force_refresh()
 
         with c2:
-            render_flow_static_svg(current_def, selected_step=sel if sel != "(Select)" else None)
+            render_flow_static_svg(current_def, selected_step=sel if sel != "(Select)" else None, key_suffix="vis")
     
     elif current_type == "ZIS::Action::Http":
         st.info("🎨 Action Designer")
@@ -843,7 +843,7 @@ with t_deb:
         with col_graph:
             st.markdown("### Trace")
             current_path = st.session_state["debug_res"][2] if "debug_res" in st.session_state else None
-            render_flow_static_svg(current_def, current_path)
+            render_flow_static_svg(current_def, current_path, key_suffix="debug")
             
     elif current_type == "ZIS::Action::Http":
         st.markdown("### ⚡ Action Tester")
