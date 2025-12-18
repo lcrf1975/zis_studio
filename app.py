@@ -138,12 +138,15 @@ def get_flow_to_render(specific_key=None):
     """
     if specific_key:
         res = st.session_state["bundle_resources"].get(specific_key)
-        if res and res.get("type") == "ZIS::Flow":
+        # Use get_zis_key for robust type checking
+        r_type = get_zis_key(res, "type", "")
+        if res and r_type == "ZIS::Flow":
             return res["properties"]["definition"], specific_key
 
     # Fallback: Search for any flow
     for k, v in st.session_state["bundle_resources"].items():
-        if v.get("type") == "ZIS::Flow":
+        r_type = get_zis_key(v, "type", "")
+        if r_type == "ZIS::Flow":
             return v["properties"]["definition"], k
     
     return None, None
@@ -255,7 +258,7 @@ if "res_selection_vis" not in st.session_state:
 if "res_selection_deb" not in st.session_state:
     # Prefer Flow for debugger default
     res = st.session_state["bundle_resources"]
-    flows = [k for k,v in res.items() if v.get("type") == "ZIS::Flow"]
+    flows = [k for k,v in res.items() if get_zis_key(v, "type") == "ZIS::Flow"]
     st.session_state["res_selection_deb"] = flows[0] if flows else (list(res.keys())[0] if res else None)
 
 if "editor_key" not in st.session_state: st.session_state["editor_key"] = 0 
@@ -451,7 +454,7 @@ def render_resource_manager(location_key, selection_state_key, allowed_types=Non
         res_map = st.session_state["bundle_resources"]
         
         if allowed_types:
-            res_keys = [k for k, v in res_map.items() if v.get("type") in allowed_types]
+            res_keys = [k for k, v in res_map.items() if get_zis_key(v, "type") in allowed_types]
         else:
             res_keys = list(res_map.keys())
         
@@ -467,9 +470,6 @@ def render_resource_manager(location_key, selection_state_key, allowed_types=Non
                 # Validation: if current selection is not valid for this view, default to first
                 if curr_val not in res_keys:
                     curr_idx = 0
-                    # Auto-fix state if invalid (optional, but good for UX)
-                    # But we can't mutate state mid-render safely without rerun. 
-                    # We rely on index=0 to visually select it.
                 else:
                     curr_idx = res_keys.index(curr_val)
                 
@@ -493,7 +493,7 @@ def render_resource_manager(location_key, selection_state_key, allowed_types=Non
         if selected_key:
             current_res = res_map.get(selected_key)
             if current_res:
-                current_type = current_res.get("type", "Unknown")
+                current_type = get_zis_key(current_res, "type", "Unknown")
                 
                 with col_type:
                     st.write("") 
@@ -623,7 +623,7 @@ with t_imp:
                     new_bundle_map = {}
                     
                     for res_key, res_data in imported_resources.items():
-                        r_type = res_data.get("type")
+                        r_type = get_zis_key(res_data, "type", "Unknown")
                         r_props = res_data.get("properties", {})
                         r_def = r_props.get("definition", {})
                         
@@ -634,17 +634,17 @@ with t_imp:
                     
                     if new_bundle_map:
                         st.session_state["bundle_resources"] = new_bundle_map
-                        # Reset all selections to first available
-                        first_key = list(new_bundle_map.keys())[0]
-                        st.session_state["res_selection_code"] = first_key
-                        st.session_state["res_selection_vis"] = first_key
                         
-                        # Find flow for debugger
-                        flows = [k for k,v in new_bundle_map.items() if v.get("type") == "ZIS::Flow"]
-                        st.session_state["res_selection_deb"] = flows[0] if flows else first_key
+                        # [FIX] Prioritize FLOW selection on Import
+                        flows = [k for k,v in new_bundle_map.items() if get_zis_key(v, "type") == "ZIS::Flow"]
+                        primary_key = flows[0] if flows else list(new_bundle_map.keys())[0]
                         
-                        # Update Editor Content
-                        formatted_js = json.dumps(new_bundle_map[first_key]["properties"]["definition"], indent=2)
+                        st.session_state["res_selection_code"] = primary_key
+                        st.session_state["res_selection_vis"] = primary_key
+                        st.session_state["res_selection_deb"] = primary_key
+                        
+                        # Update Editor Content if Code tab is active context
+                        formatted_js = json.dumps(new_bundle_map[primary_key]["properties"]["definition"], indent=2)
                         st.session_state["editor_content"] = formatted_js
                         st.session_state["last_synced_code"] = formatted_js
                         
@@ -691,6 +691,12 @@ with t_vis:
     current_sel_key = st.session_state.get("res_selection_vis")
     current_res_obj = st.session_state["bundle_resources"].get(current_sel_key)
     
+    # [FIX] Only sync from editor if Visual Designer is looking at the same file as Code Editor
+    # This prevents overwriting Resource B with Resource A's content in 'editor_content'
+    if st.session_state.get("res_selection_code") == current_sel_key:
+        ok, err = try_sync_from_editor(current_sel_key, force_ui_update=False)
+        if not ok: st.error(f"⚠️ Invalid JSON in Code Editor: {err}")
+    
     # Determine Flow to Display (Always show right column)
     # If selected is flow, show it. If not, fallback to any flow.
     flow_to_show_def, flow_to_show_name = get_flow_to_render(current_sel_key)
@@ -701,7 +707,7 @@ with t_vis:
     main_c1, main_c2 = st.columns([1, 1])
 
     if current_res_obj:
-        current_type = current_res_obj.get("type")
+        current_type = get_zis_key(current_res_obj, "type", "Unknown")
         current_def = current_res_obj["properties"]["definition"]
 
         with main_c1:
@@ -896,7 +902,7 @@ with t_deb:
     
     # Re-fetch current details
     if current_res_obj:
-        current_type = current_res_obj.get("type")
+        current_type = get_zis_key(current_res_obj, "type", "Unknown")
         current_def = current_res_obj["properties"]["definition"]
         
         st.info(f"Currently Debugging: **{current_sel_key}**")
