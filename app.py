@@ -106,7 +106,6 @@ def normalize_zis_keys(obj):
 def clean_resource_definition(res_data):
     if not isinstance(res_data, dict): return res_data
     clean = res_data.copy()
-    # Remove meta properties that don't belong in the "definition" part
     forbidden_keys = ["zis_template_version", "resources", "name", "description", "type", "properties"]
     for key in forbidden_keys:
         if key in clean: del clean[key]
@@ -130,16 +129,17 @@ def sanitize_step(step_data):
                 if target not in step_data: step_data[target] = val
                 del step_data[k]
 
-# [HELPER] Get the most relevant flow to display
-def get_flow_to_render():
+# [HELPER] Get the most relevant flow to display (for Trace/Debugger)
+def get_flow_to_render(specific_key=None):
     """
     Returns the definition and name of the flow to display.
+    If specific_key is provided and is a flow, returns that.
+    Otherwise, fallback to first available flow.
     """
-    curr_key = st.session_state.get("selected_resource_key")
-    if curr_key:
-        res = st.session_state["bundle_resources"].get(curr_key)
+    if specific_key:
+        res = st.session_state["bundle_resources"].get(specific_key)
         if res and res.get("type") == "ZIS::Flow":
-            return res["properties"]["definition"], curr_key
+            return res["properties"]["definition"], specific_key
 
     # Fallback: Search for any flow
     for k, v in st.session_state["bundle_resources"].items():
@@ -148,20 +148,18 @@ def get_flow_to_render():
     
     return None, None
 
-# [CRITICAL] Sync Function - UPDATED FOR MULTI-RESOURCE
-def try_sync_from_editor(new_content=None, force_ui_update=False):
+# [CRITICAL] Sync Function - TARGETED
+def try_sync_from_editor(target_resource_key, new_content=None, force_ui_update=False):
     content = new_content if new_content is not None else st.session_state.get("editor_content", "")
     last_synced = st.session_state.get("last_synced_code", None)
     should_process = force_ui_update or (content != last_synced)
     
-    current_res_key = st.session_state.get("selected_resource_key")
-    if not current_res_key: return True, None
-
+    if not target_resource_key: return True, None
     if not should_process: return True, None
 
     if not content or not content.strip():
         # Revert to current state if empty
-        curr_res = st.session_state["bundle_resources"].get(current_res_key, {})
+        curr_res = st.session_state["bundle_resources"].get(target_resource_key, {})
         def_content = curr_res.get("properties", {}).get("definition", {})
         content = json.dumps(def_content, indent=2)
         st.session_state["editor_content"] = content
@@ -172,7 +170,6 @@ def try_sync_from_editor(new_content=None, force_ui_update=False):
         cleaned_content = clean_json_string(content)
         js = json.loads(cleaned_content)
         
-        # If user pasted a full resource object, extract just definition
         if "properties" in js and "definition" in js["properties"]:
             js = js["properties"]["definition"]
         elif "definition" in js:
@@ -181,13 +178,10 @@ def try_sync_from_editor(new_content=None, force_ui_update=False):
         norm_js = normalize_zis_keys(clean_resource_definition(js))
         
         # Update Bundle State
-        st.session_state["bundle_resources"][current_res_key]["properties"]["definition"] = norm_js
+        st.session_state["bundle_resources"][target_resource_key]["properties"]["definition"] = norm_js
         
         st.session_state["last_synced_code"] = content
         st.session_state["ui_render_key"] += 1
-        
-        # Note: We don't invalidate cached_svg here manually anymore because
-        # the render function now uses a hash check.
         
         if force_ui_update:
             formatted_json = json.dumps(norm_js, indent=2)
@@ -249,20 +243,29 @@ if "bundle_resources" not in st.session_state:
         }
     }
 
-if "selected_resource_key" not in st.session_state: 
-    if st.session_state["bundle_resources"]:
-        st.session_state["selected_resource_key"] = list(st.session_state["bundle_resources"].keys())[0]
-    else:
-        st.session_state["selected_resource_key"] = ""
+# Initialize Independent Selection States
+if "res_selection_code" not in st.session_state:
+    keys = list(st.session_state["bundle_resources"].keys())
+    st.session_state["res_selection_code"] = keys[0] if keys else None
+
+if "res_selection_vis" not in st.session_state:
+    keys = list(st.session_state["bundle_resources"].keys())
+    st.session_state["res_selection_vis"] = keys[0] if keys else None
+
+if "res_selection_deb" not in st.session_state:
+    # Prefer Flow for debugger default
+    res = st.session_state["bundle_resources"]
+    flows = [k for k,v in res.items() if v.get("type") == "ZIS::Flow"]
+    st.session_state["res_selection_deb"] = flows[0] if flows else (list(res.keys())[0] if res else None)
 
 if "editor_key" not in st.session_state: st.session_state["editor_key"] = 0 
 if "ui_render_key" not in st.session_state: st.session_state["ui_render_key"] = 0
 
-# Initial Editor Content Load
-if st.session_state["selected_resource_key"] and "editor_content" not in st.session_state:
-    cur_key = st.session_state["selected_resource_key"]
-    cur_def = st.session_state["bundle_resources"][cur_key]["properties"]["definition"]
-    content = json.dumps(cur_def, indent=2)
+# Initial Editor Content Load (Based on Code Tab Selection)
+curr_code_key = st.session_state.get("res_selection_code")
+if curr_code_key and "editor_content" not in st.session_state:
+    curr_def = st.session_state["bundle_resources"][curr_code_key]["properties"]["definition"]
+    content = json.dumps(curr_def, indent=2)
     st.session_state["editor_content"] = content
     st.session_state["last_synced_code"] = content
 
@@ -295,20 +298,14 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
     if not HAS_GRAPHVIZ: 
         return st.warning("Graphviz not installed. Please add 'graphviz' to requirements.txt")
 
-    # Generate Hash of the content to determine if we need to redraw
-    # We include path/selection in the hash so highlighting triggers redraw
     content_sig = json.dumps(flow_def, sort_keys=True) + str(highlight_path) + str(selected_step)
     current_hash = hashlib.md5(content_sig.encode()).hexdigest()
     
-    # 1. GENERATE BASE GRAPH (Only if hash changed)
     if st.session_state["cached_svg"] is None or st.session_state["cached_svg_hash"] != current_hash:
         try:
             dot = graphviz.Digraph(format='svg')
-            # Settings for better spacing
             dot.attr(rankdir='TB', splines='polyline', compound='true')
             dot.attr(nodesep='0.6', ranksep='0.8') 
-            
-            # Use strict attributes for all nodes
             dot.attr('node', shape='box', style='filled,rounded', 
                      fillcolor='#ECECFF', color='#939393', penwidth='2',
                      fontname='Arial', fontsize='12', margin='0.2')
@@ -317,22 +314,18 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
             states = get_zis_key(flow_def, "States", {})
             start_step = get_zis_key(flow_def, "StartAt")
 
-            # Nodes
             dot.node("START", "Start", shape="circle", fillcolor="#4CAF50", color="#388E3C", width="0.6", fontcolor="white", id="node_START", fontsize='10')
             dot.node("END", "End", shape="doublecircle", fillcolor="#333333", color="#000000", width="0.5", fontcolor="white", id="node_END", fontsize='10')
 
-            # Sort items specifically for graph generation consistency
             sorted_items = sorted(states.items())
             
             for k, v in sorted_items:
                 sType = get_zis_key(v, "Type", "Unknown")
                 display_k = k if len(k) < 25 else k[:23] + ".."
                 label = f"{display_k}\n[{sType}]"
-                # Use a strictly alphanumeric ID for CSS targeting
                 safe_id = re.sub(r'[^a-zA-Z0-9]', '_', k)
                 dot.node(k, label, id=f"node_{safe_id}")
 
-            # Edges
             if start_step: dot.edge("START", start_step)
 
             for k, v in sorted_items:
@@ -351,15 +344,11 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
                 if is_explicit_end or is_terminal:
                     dot.edge(k, "END")
 
-            # Get Raw SVG
             svg_bytes = dot.pipe()
             svg_str = svg_bytes.decode('utf-8')
-            
-            # [FIX] RESPONSIVENESS:
             svg_str = re.sub(r'<\?xml.*?>', '', svg_str)
             svg_str = re.sub(r'<!DOCTYPE.*?>', '', svg_str)
             
-            # Update Cache
             st.session_state["cached_svg"] = svg_str
             st.session_state["cached_svg_hash"] = current_hash
             
@@ -367,10 +356,8 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
             st.error(f"Render Error: {e}")
             return
 
-    # 2. RETRIEVE CACHED SVG
     final_svg = st.session_state["cached_svg"]
     
-    # 3. GENERATE CSS FOR HIGHLIGHTS
     css_rules = []
     if selected_step:
         safe_sel_id = re.sub(r'[^a-zA-Z0-9]', '_', selected_step)
@@ -384,7 +371,6 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
         
     if highlight_path:
         for step in highlight_path:
-            # Simple sanitization to match node IDs
             safe_step_id = re.sub(r'[^a-zA-Z0-9]', '_', step)
             if step == selected_step: continue
             css_rules.append(f"""
@@ -394,8 +380,6 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
                 }}
             """)
 
-    # 4. RENDER IN RESPONSIVE CONTAINER
-    # We include the hash in the comment to force HTML update if content changed
     full_html = f"""
     <!DOCTYPE html>
     <!-- hash: {current_hash} | context: {key_suffix} -->
@@ -425,21 +409,16 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
     </html>
     """
     est_height = 200 + (len(get_zis_key(flow_def, "States", {})) * 120)
-    
     components.html(full_html, height=est_height, scrolling=True)
 
 
 # ==========================================
 # 4. REUSABLE RESOURCE MANAGER COMPONENT
 # ==========================================
-def handle_resource_change(widget_key):
-    """Callback to update global state immediately when selectbox changes."""
+def handle_resource_change_code(widget_key, selection_state_key):
+    """Specific callback for Code Editor to update text content"""
     new_value = st.session_state[widget_key]
-    st.session_state["selected_resource_key"] = new_value
-    
-    # [CRITICAL FIX] Clear debug trace when switching files to avoid mismatched highlights
-    if "debug_res" in st.session_state:
-        del st.session_state["debug_res"]
+    st.session_state[selection_state_key] = new_value
     
     # Update Editor Content immediately
     res_map = st.session_state["bundle_resources"]
@@ -449,26 +428,33 @@ def handle_resource_change(widget_key):
         st.session_state["editor_content"] = formatted_json
         st.session_state["last_synced_code"] = formatted_json
         st.session_state["editor_key"] += 1
-        st.session_state["ui_render_key"] += 1
-        # No need to wipe cached_svg manually, hash check handles it
 
-def render_resource_manager(location_key, allowed_types=None):
+def handle_resource_change_generic(widget_key, selection_state_key):
+    """Generic callback for Visual/Debug to update their state key"""
+    new_value = st.session_state[widget_key]
+    st.session_state[selection_state_key] = new_value
+    
+    # Side effects
+    if "vis" in selection_state_key:
+        st.session_state["cached_svg"] = None # Invalidate visual cache
+    if "deb" in selection_state_key:
+        if "debug_res" in st.session_state: del st.session_state["debug_res"] # Clear debug trace
+
+def render_resource_manager(location_key, selection_state_key, allowed_types=None):
     """
     Renders the Resource Manager UI.
-    allowed_types: List of strings (e.g., ["ZIS::Flow"]). If None, shows all.
+    selection_state_key: The session state key to store selection (e.g. 'res_selection_code')
     """
     with st.container(border=True):
         st.markdown(f"**🗂️ Resource Manager**")
         
         res_map = st.session_state["bundle_resources"]
         
-        # Filter keys if allowed_types is set
         if allowed_types:
             res_keys = [k for k, v in res_map.items() if v.get("type") in allowed_types]
         else:
             res_keys = list(res_map.keys())
         
-        # [FIX] Better column spacing for layout alignment
         col_sel, col_type, col_act = st.columns([3, 1, 1])
         
         with col_sel:
@@ -476,22 +462,32 @@ def render_resource_manager(location_key, allowed_types=None):
                  st.warning("No matching resources.")
                  selected_key = None
             else:
-                # Sync logic: Ensure the selectbox reflects the global session state
-                curr_val = st.session_state.get("selected_resource_key")
+                curr_val = st.session_state.get(selection_state_key)
                 
+                # Validation: if current selection is not valid for this view, default to first
                 if curr_val not in res_keys:
                     curr_idx = 0
+                    # Auto-fix state if invalid (optional, but good for UX)
+                    # But we can't mutate state mid-render safely without rerun. 
+                    # We rely on index=0 to visually select it.
                 else:
                     curr_idx = res_keys.index(curr_val)
                 
                 widget_key = f"res_sel_{location_key}"
+                
+                # Determine which callback to use
+                if "code" in selection_state_key:
+                    cb = handle_resource_change_code
+                else:
+                    cb = handle_resource_change_generic
+
                 selected_key = st.selectbox(
                     "Select File", 
                     res_keys, 
                     index=curr_idx, 
                     key=widget_key,
-                    on_change=handle_resource_change,
-                    args=(widget_key,)
+                    on_change=cb,
+                    args=(widget_key, selection_state_key)
                 )
 
         if selected_key:
@@ -499,21 +495,22 @@ def render_resource_manager(location_key, allowed_types=None):
             if current_res:
                 current_type = current_res.get("type", "Unknown")
                 
-                # [FIX] Vertical alignment for info and button
                 with col_type:
-                    st.write("") # Spacer
+                    st.write("") 
                     st.info(f"**{current_type.replace('ZIS::', '')}**")
                 
                 with col_act:
-                    st.write("") # Spacer
-                    st.write("") # Spacer
+                    st.write("") 
+                    st.write("") 
                     if len(list(res_map.keys())) > 1: 
                         if st.button("🗑️ Del", type="secondary", key=f"del_{location_key}"):
                             del st.session_state["bundle_resources"][selected_key]
+                            # Reset this specific selection
                             rem_keys = list(st.session_state["bundle_resources"].keys())
                             if rem_keys:
-                                st.session_state["selected_resource_key"] = rem_keys[0]
-                                handle_resource_change(widget_key) 
+                                st.session_state[selection_state_key] = rem_keys[0]
+                                if "code" in selection_state_key:
+                                    handle_resource_change_code(widget_key, selection_state_key) # update content
                             force_refresh()
                     else:
                         st.caption("Locked")
@@ -543,9 +540,13 @@ def render_resource_manager(location_key, allowed_types=None):
                                 "type": new_res_type,
                                 "properties": {"name": safe_name, "definition": def_def}
                             }
-                            st.session_state["selected_resource_key"] = safe_name 
-                            formatted_json = json.dumps(def_def, indent=2)
-                            st.session_state["editor_content"] = formatted_json
+                            # Update ONLY this tab's selection
+                            st.session_state[selection_state_key] = safe_name 
+                            
+                            # If we are in code editor, update content
+                            if "code" in selection_state_key:
+                                formatted_json = json.dumps(def_def, indent=2)
+                                st.session_state["editor_content"] = formatted_json
                             
                             st.success(f"Created: {safe_name}")
                             time.sleep(0.5)
@@ -618,7 +619,6 @@ with t_imp:
                 url = f"{get_base_url()}/{it['int']}/bundles/{it['uuid'] or it['bun']}"
                 r = requests.get(url, auth=get_auth())
                 if r.status_code == 200:
-                    # [NEW IMPORT LOGIC]
                     imported_resources = r.json().get("resources", {})
                     new_bundle_map = {}
                     
@@ -627,37 +627,34 @@ with t_imp:
                         r_props = res_data.get("properties", {})
                         r_def = r_props.get("definition", {})
                         
-                        # Clean definition
                         clean_def = normalize_zis_keys(clean_resource_definition(r_def))
                         r_props["definition"] = clean_def
                         res_data["properties"] = r_props
-                        
                         new_bundle_map[res_key] = res_data
                     
                     if new_bundle_map:
                         st.session_state["bundle_resources"] = new_bundle_map
-                        # Select first flow or first item
+                        # Reset all selections to first available
                         first_key = list(new_bundle_map.keys())[0]
-                        for k, v in new_bundle_map.items():
-                            if v.get("type") == "ZIS::Flow":
-                                first_key = k; break
+                        st.session_state["res_selection_code"] = first_key
+                        st.session_state["res_selection_vis"] = first_key
                         
-                        st.session_state["selected_resource_key"] = first_key
+                        # Find flow for debugger
+                        flows = [k for k,v in new_bundle_map.items() if v.get("type") == "ZIS::Flow"]
+                        st.session_state["res_selection_deb"] = flows[0] if flows else first_key
                         
-                        # Trigger Editor Refresh
+                        # Update Editor Content
                         formatted_js = json.dumps(new_bundle_map[first_key]["properties"]["definition"], indent=2)
                         st.session_state["editor_content"] = formatted_js
                         st.session_state["last_synced_code"] = formatted_js
-                        st.session_state["editor_key"] += 1
-                        st.session_state["ui_render_key"] += 1
                         
                         st.toast("Bundle Loaded!", icon="🎉"); time.sleep(0.5); force_refresh()
                     else:
                         st.warning("Bundle is empty.")
 
 with t_code:
-    # RENDER CONTEXTUAL MENU
-    render_resource_manager("code_tab")
+    # Use independent state key: "res_selection_code"
+    render_resource_manager("code_tab", "res_selection_code")
     st.divider()
 
     dk = f"code_editor_{st.session_state['editor_key']}"
@@ -679,160 +676,166 @@ with t_code:
         if resp and resp.get("type") == "submit":
             current_text = resp.get("text", "")
             st.session_state["editor_content"] = current_text
-            ok, err = try_sync_from_editor(new_content=current_text, force_ui_update=False)
+            # Sync to the resource currently selected IN THIS TAB
+            target_key = st.session_state.get("res_selection_code")
+            ok, err = try_sync_from_editor(target_key, new_content=current_text, force_ui_update=False)
             if ok: st.toast("Saved Successfully!", icon="✅")
             else: st.error(f"❌ Syntax Error: {err}")
 
 with t_vis:
-    # RENDER CONTEXTUAL MENU
-    render_resource_manager("vis_tab")
+    # Use independent state key: "res_selection_vis"
+    render_resource_manager("vis_tab", "res_selection_vis")
     st.divider()
 
-    ok, err = try_sync_from_editor(force_ui_update=False)
+    # Get resource selected in THIS tab
+    current_sel_key = st.session_state.get("res_selection_vis")
+    current_res_obj = st.session_state["bundle_resources"].get(current_sel_key)
     
-    current_res_obj = st.session_state["bundle_resources"][st.session_state["selected_resource_key"]]
-    current_type = current_res_obj.get("type")
-    current_def = current_res_obj["properties"]["definition"]
+    # Determine Flow to Display (Always show right column)
+    # If selected is flow, show it. If not, fallback to any flow.
+    flow_to_show_def, flow_to_show_name = get_flow_to_render(current_sel_key)
+    
     ui_key = st.session_state["ui_render_key"]
     
-    # [NEW] Determine Flow to Display (Always show right column)
-    flow_to_show_def, flow_to_show_name = get_flow_to_render()
-
-    if not ok: st.error(f"⚠️ Invalid JSON: {err}")
-    
-    # 2-COLUMN LAYOUT: Editor (Left) | Visualizer (Right)
+    # 2-COLUMN LAYOUT
     main_c1, main_c2 = st.columns([1, 1])
 
-    with main_c1:
-        if current_type == "ZIS::Flow":
-            # ==========================================
-            # EXISTING FLOW DESIGNER LOGIC
-            # ==========================================
-            states = get_zis_key(current_def, "States", {})
-            keys = list(states.keys())
-            
-            st.subheader("Flow Steps")
-            sel = st.selectbox("Step", ["(Select)"] + keys, key=f"step_selector_{ui_key}")
-            
-            with st.expander("➕ Add Step"):
-                nn = st.text_input("Name"); nt = st.selectbox("Type", ["Action", "Choice", "Wait", "Pass", "Succeed", "Fail"])
-                if st.button("Add"): 
-                    states[nn] = {"Type": nt, "End": True} if nt == "Pass" else {"Type": nt}
-                    current_def["States"] = states # Ensure update
-                    formatted = json.dumps(current_def, indent=2)
-                    st.session_state["editor_content"] = formatted
-                    st.session_state["last_synced_code"] = formatted
-                    st.session_state["ui_render_key"] += 1
-                    force_refresh()
-            
-            st.divider()
-            if sel != "(Select)" and sel in states:
-                s_dat = states[sel]; sanitize_step(s_dat); s_typ = get_zis_key(s_dat, "Type")
-                st.markdown(f"### {sel} `[{s_typ}]`")
-                if s_typ not in ["Succeed", "Fail", "Choice"]:
-                    is_end = st.checkbox("End Flow?", get_zis_key(s_dat, "End", False), key=f"end_{sel}_{ui_key}")
-                    if is_end: s_dat["End"] = True; s_dat.pop("Next", None)
-                    else:
-                        s_dat.pop("End", None)
-                        nxt_opts = [k for k in keys if k != sel]
-                        curr_nxt = get_zis_key(s_dat, "Next", "")
-                        idx = find_best_match_index(nxt_opts, curr_nxt)
-                        final_idx = (idx + 1) if idx != -1 else 0
-                        new_nxt = st.selectbox("Next", ["(Select)"] + nxt_opts, index=final_idx, key=f"nxt_{sel}_{ui_key}")
-                        if new_nxt != "(Select)": s_dat["Next"] = new_nxt
+    if current_res_obj:
+        current_type = current_res_obj.get("type")
+        current_def = current_res_obj["properties"]["definition"]
 
-                if s_typ == "Action":
-                    s_dat["ActionName"] = st.text_input("Action", get_zis_key(s_dat, "ActionName", ""), key=f"act_{sel}_{ui_key}")
-                    current_params = get_zis_key(s_dat, "Parameters", {})
-                    param_str = json.dumps(current_params, indent=2)
-                    new_param_str = st.text_area("Params", param_str, key=f"prm_{sel}_{ui_key}")
-                    try:
-                        s_dat["Parameters"] = json.loads(new_param_str)
-                    except:
-                        st.caption("❌ Invalid JSON in Params")
-                    s_dat["ResultPath"] = st.text_input("ResultPath (e.g. $.myVar)", get_zis_key(s_dat, "ResultPath", ""), key=f"res_{sel}_{ui_key}")
+        with main_c1:
+            if current_type == "ZIS::Flow":
+                states = get_zis_key(current_def, "States", {})
+                keys = list(states.keys())
+                
+                st.subheader("Flow Steps")
+                sel = st.selectbox("Step", ["(Select)"] + keys, key=f"step_selector_{ui_key}")
+                
+                with st.expander("➕ Add Step"):
+                    nn = st.text_input("Name"); nt = st.selectbox("Type", ["Action", "Choice", "Wait", "Pass", "Succeed", "Fail"])
+                    if st.button("Add"): 
+                        states[nn] = {"Type": nt, "End": True} if nt == "Pass" else {"Type": nt}
+                        current_def["States"] = states
+                        # Force editor update ONLY if code tab is looking at the same file
+                        if st.session_state.get("res_selection_code") == current_sel_key:
+                            formatted = json.dumps(current_def, indent=2)
+                            st.session_state["editor_content"] = formatted
+                            st.session_state["last_synced_code"] = formatted
+                            st.session_state["editor_key"] += 1
+                        st.session_state["ui_render_key"] += 1
+                        force_refresh()
+                
+                st.divider()
+                if sel != "(Select)" and sel in states:
+                    s_dat = states[sel]; sanitize_step(s_dat); s_typ = get_zis_key(s_dat, "Type")
+                    st.markdown(f"### {sel} `[{s_typ}]`")
+                    if s_typ not in ["Succeed", "Fail", "Choice"]:
+                        is_end = st.checkbox("End Flow?", get_zis_key(s_dat, "End", False), key=f"end_{sel}_{ui_key}")
+                        if is_end: s_dat["End"] = True; s_dat.pop("Next", None)
+                        else:
+                            s_dat.pop("End", None)
+                            nxt_opts = [k for k in keys if k != sel]
+                            curr_nxt = get_zis_key(s_dat, "Next", "")
+                            idx = find_best_match_index(nxt_opts, curr_nxt)
+                            final_idx = (idx + 1) if idx != -1 else 0
+                            new_nxt = st.selectbox("Next", ["(Select)"] + nxt_opts, index=final_idx, key=f"nxt_{sel}_{ui_key}")
+                            if new_nxt != "(Select)": s_dat["Next"] = new_nxt
 
-                elif s_typ == "Choice":
-                    # Choice logic (same as before)
-                    idx_def = find_best_match_index([k for k in keys if k != sel], get_zis_key(s_dat, "Default"))
-                    final_idx_def = idx_def if idx_def != -1 else 0
-                    s_dat["Default"] = st.selectbox("Default", [k for k in keys if k != sel], index=final_idx_def, key=f"def_{sel}_{ui_key}")
-                    chs = get_zis_key(s_dat, "Choices", [])
-                    if not isinstance(chs, list): chs = []
-                    s_dat["Choices"] = chs
-                    for i, ch in enumerate(chs):
-                        with st.expander(f"Rule {i+1}"):
-                            ch["Variable"] = st.text_input("Var", get_zis_key(ch, "Variable", ""), key=f"cv_{i}_{sel}_{ui_key}")
-                            ops = ["StringEquals", "BooleanEquals", "NumericEquals", "NumericGreaterThan"]
-                            curr_op = "StringEquals"; curr_val = ""
-                            for op in ops:
-                                if get_zis_key(ch, op) is not None: curr_op = op; curr_val = get_zis_key(ch, op); break
-                            new_op = st.selectbox("Op", ops, index=ops.index(curr_op), key=f"cop_{i}_{sel}_{ui_key}")
-                            new_val = st.text_input("Val", str(curr_val), key=f"cqv_{i}_{sel}_{ui_key}")
-                            for op in ops: ch.pop(op, None); ch.pop(op.lower(), None)
-                            real_val = new_val
-                            if "Numeric" in new_op: 
-                                try: real_val = float(new_val)
-                                except: pass
-                            ch[new_op] = real_val
-                            
-                            idx_rule_next = find_best_match_index([k for k in keys if k != sel], get_zis_key(ch, "Next"))
-                            final_idx_rule = idx_rule_next if idx_rule_next != -1 else 0
-                            
-                            ch["Next"] = st.selectbox("GoTo", [k for k in keys if k != sel], index=final_idx_rule, key=f"cn_{i}_{sel}_{ui_key}")
-                            if st.button("Del", key=f"cd_{i}_{sel}_{ui_key}"): chs.pop(i); force_refresh()
-                    if st.button("Add Rule", key=f"ar_{sel}_{ui_key}"): chs.append({"Variable": "$.", "StringEquals": "", "Next": ""}); force_refresh()
+                    if s_typ == "Action":
+                        s_dat["ActionName"] = st.text_input("Action", get_zis_key(s_dat, "ActionName", ""), key=f"act_{sel}_{ui_key}")
+                        current_params = get_zis_key(s_dat, "Parameters", {})
+                        param_str = json.dumps(current_params, indent=2)
+                        new_param_str = st.text_area("Params", param_str, key=f"prm_{sel}_{ui_key}")
+                        try:
+                            s_dat["Parameters"] = json.loads(new_param_str)
+                        except:
+                            st.caption("❌ Invalid JSON in Params")
+                        s_dat["ResultPath"] = st.text_input("ResultPath (e.g. $.myVar)", get_zis_key(s_dat, "ResultPath", ""), key=f"res_{sel}_{ui_key}")
 
-                if st.button("Save Changes", type="primary", key=f"sv_{sel}_{ui_key}"):
-                    new_code = json.dumps(current_def, indent=2)
-                    st.session_state["editor_content"] = new_code
-                    st.session_state["last_synced_code"] = new_code
-                    st.session_state["editor_key"] += 1
-                    st.success("Saved"); force_refresh()
+                    elif s_typ == "Choice":
+                        idx_def = find_best_match_index([k for k in keys if k != sel], get_zis_key(s_dat, "Default"))
+                        final_idx_def = idx_def if idx_def != -1 else 0
+                        s_dat["Default"] = st.selectbox("Default", [k for k in keys if k != sel], index=final_idx_def, key=f"def_{sel}_{ui_key}")
+                        chs = get_zis_key(s_dat, "Choices", [])
+                        if not isinstance(chs, list): chs = []
+                        s_dat["Choices"] = chs
+                        for i, ch in enumerate(chs):
+                            with st.expander(f"Rule {i+1}"):
+                                ch["Variable"] = st.text_input("Var", get_zis_key(ch, "Variable", ""), key=f"cv_{i}_{sel}_{ui_key}")
+                                ops = ["StringEquals", "BooleanEquals", "NumericEquals", "NumericGreaterThan"]
+                                curr_op = "StringEquals"; curr_val = ""
+                                for op in ops:
+                                    if get_zis_key(ch, op) is not None: curr_op = op; curr_val = get_zis_key(ch, op); break
+                                new_op = st.selectbox("Op", ops, index=ops.index(curr_op), key=f"cop_{i}_{sel}_{ui_key}")
+                                new_val = st.text_input("Val", str(curr_val), key=f"cqv_{i}_{sel}_{ui_key}")
+                                for op in ops: ch.pop(op, None); ch.pop(op.lower(), None)
+                                real_val = new_val
+                                if "Numeric" in new_op: 
+                                    try: real_val = float(new_val)
+                                    except: pass
+                                ch[new_op] = real_val
+                                
+                                idx_rule_next = find_best_match_index([k for k in keys if k != sel], get_zis_key(ch, "Next"))
+                                final_idx_rule = idx_rule_next if idx_rule_next != -1 else 0
+                                
+                                ch["Next"] = st.selectbox("GoTo", [k for k in keys if k != sel], index=final_idx_rule, key=f"cn_{i}_{sel}_{ui_key}")
+                                if st.button("Del", key=f"cd_{i}_{sel}_{ui_key}"): chs.pop(i); force_refresh()
+                        if st.button("Add Rule", key=f"ar_{sel}_{ui_key}"): chs.append({"Variable": "$.", "StringEquals": "", "Next": ""}); force_refresh()
 
-        elif current_type == "ZIS::Action::Http":
-            st.info("🎨 Action Designer")
-            c1, c2 = st.columns(2)
-            with c1:
-                current_def["method"] = st.selectbox("Method", ["GET", "POST", "PUT", "DELETE", "PATCH"], index=["GET", "POST", "PUT", "DELETE", "PATCH"].index(current_def.get("method", "GET")), key=f"mth_{ui_key}")
-                current_def["url"] = st.text_input("URL", value=current_def.get("url", ""), key=f"url_{ui_key}")
-            
-            st.subheader("Headers")
-            hdrs = current_def.get("headers", [])
-            if not isinstance(hdrs, list): hdrs = [] 
-            for i, h in enumerate(hdrs):
-                hc1, hc2 = st.columns(2)
-                h["key"] = hc1.text_input(f"Key #{i}", h.get("key", ""), key=f"hk_{i}_{ui_key}")
-                h["value"] = hc2.text_input(f"Value #{i}", h.get("value", ""), key=f"hv_{i}_{ui_key}")
-            if st.button("Add Header"):
-                hdrs.append({"key": "", "value": ""})
-                current_def["headers"] = hdrs; force_refresh()
+                    if st.button("Save Changes", type="primary", key=f"sv_{sel}_{ui_key}"):
+                        # Sync updates
+                        if st.session_state.get("res_selection_code") == current_sel_key:
+                            new_code = json.dumps(current_def, indent=2)
+                            st.session_state["editor_content"] = new_code
+                            st.session_state["last_synced_code"] = new_code
+                            st.session_state["editor_key"] += 1
+                        st.success("Saved"); force_refresh()
 
-            if st.button("Save Action", type="primary"):
-                new_code = json.dumps(current_def, indent=2)
-                st.session_state["editor_content"] = new_code
-                st.session_state["last_synced_code"] = new_code
-                st.success("Saved Action")
+            elif current_type == "ZIS::Action::Http":
+                st.info("🎨 Action Designer")
+                c1, c2 = st.columns(2)
+                with c1:
+                    current_def["method"] = st.selectbox("Method", ["GET", "POST", "PUT", "DELETE", "PATCH"], index=["GET", "POST", "PUT", "DELETE", "PATCH"].index(current_def.get("method", "GET")), key=f"mth_{ui_key}")
+                    current_def["url"] = st.text_input("URL", value=current_def.get("url", ""), key=f"url_{ui_key}")
+                
+                st.subheader("Headers")
+                hdrs = current_def.get("headers", [])
+                if not isinstance(hdrs, list): hdrs = [] 
+                for i, h in enumerate(hdrs):
+                    hc1, hc2 = st.columns(2)
+                    h["key"] = hc1.text_input(f"Key #{i}", h.get("key", ""), key=f"hk_{i}_{ui_key}")
+                    h["value"] = hc2.text_input(f"Value #{i}", h.get("value", ""), key=f"hv_{i}_{ui_key}")
+                if st.button("Add Header"):
+                    hdrs.append({"key": "", "value": ""})
+                    current_def["headers"] = hdrs; force_refresh()
 
-        elif current_type == "ZIS::JobSpec":
-            st.info("🎨 Job Spec Configuration")
-            current_def["event_source"] = st.text_input("Event Source", current_def.get("event_source", "zendesk"), key=f"es_{ui_key}")
-            current_def["event_type"] = st.text_input("Event Type", current_def.get("event_type", "ticket.saved"), key=f"et_{ui_key}")
-            current_def["target_flow"] = st.text_input("Target Flow Name (zis:integration:default:flow_name)", current_def.get("target_flow", ""), key=f"tf_{ui_key}")
-            
-            if st.button("Save Job Spec", type="primary"):
-                new_code = json.dumps(current_def, indent=2)
-                st.session_state["editor_content"] = new_code
-                st.session_state["last_synced_code"] = new_code
-                st.success("Saved Job Spec")
-        else:
-            st.warning(f"Visual Designer not available for {current_type}")
+                if st.button("Save Action", type="primary"):
+                    if st.session_state.get("res_selection_code") == current_sel_key:
+                        new_code = json.dumps(current_def, indent=2)
+                        st.session_state["editor_content"] = new_code
+                        st.session_state["last_synced_code"] = new_code
+                    st.success("Saved Action")
 
-    # Visualizer Column (Always visible if flow exists)
+            elif current_type == "ZIS::JobSpec":
+                st.info("🎨 Job Spec Configuration")
+                current_def["event_source"] = st.text_input("Event Source", current_def.get("event_source", "zendesk"), key=f"es_{ui_key}")
+                current_def["event_type"] = st.text_input("Event Type", current_def.get("event_type", "ticket.saved"), key=f"et_{ui_key}")
+                current_def["target_flow"] = st.text_input("Target Flow Name (zis:integration:default:flow_name)", current_def.get("target_flow", ""), key=f"tf_{ui_key}")
+                
+                if st.button("Save Job Spec", type="primary"):
+                    if st.session_state.get("res_selection_code") == current_sel_key:
+                        new_code = json.dumps(current_def, indent=2)
+                        st.session_state["editor_content"] = new_code
+                        st.session_state["last_synced_code"] = new_code
+                    st.success("Saved Job Spec")
+            else:
+                st.warning(f"Visual Designer not available for {current_type}")
+
+    # Visualizer Column
     with main_c2:
         if flow_to_show_def:
             st.markdown(f"**Viewing Flow: `{flow_to_show_name}`**")
-            # If current resource is Flow, we pass 'sel' (selected step), otherwise None
             step_to_highlight = sel if (current_type == "ZIS::Flow" and 'sel' in locals() and sel != "(Select)") else None
             render_flow_static_svg(flow_to_show_def, selected_step=step_to_highlight, key_suffix="vis")
         else:
@@ -858,7 +861,6 @@ with t_dep:
                         
                         safe_bun = bun_name.lower().strip().replace("-", "_").replace(" ", "")
                         
-                        # [BUNDLE ASSEMBLY]
                         resources_payload = {}
                         res_map = st.session_state["bundle_resources"]
                         
@@ -885,25 +887,21 @@ with t_dep:
                     except Exception as e: st.error(str(e))
 
 with t_deb:
-    # RENDER CONTEXTUAL MENU with FILTER (Only Flows)
-    render_resource_manager("deb_tab", allowed_types=["ZIS::Flow"])
+    # Use independent state key: "res_selection_deb" with filter
+    render_resource_manager("deb_tab", "res_selection_deb", allowed_types=["ZIS::Flow"])
     st.divider()
     
-    current_res_obj = st.session_state["bundle_resources"].get(st.session_state["selected_resource_key"])
-    
-    # Safety Check: If current selection is NOT a flow (e.g. user selected Action in editor then clicked Debugger),
-    # We should handle it nicely. The selector above will probably look empty or mismatch.
-    # We should prioritize showing the 'current_res_obj' IF it matches the allowed type.
+    current_sel_key = st.session_state.get("res_selection_deb")
+    current_res_obj = st.session_state["bundle_resources"].get(current_sel_key)
     
     # Re-fetch current details
     if current_res_obj:
         current_type = current_res_obj.get("type")
         current_def = current_res_obj["properties"]["definition"]
         
-        st.info(f"Currently Debugging: **{st.session_state['selected_resource_key']}**")
+        st.info(f"Currently Debugging: **{current_sel_key}**")
 
         if current_type == "ZIS::Flow":
-            # ... standard debug view
             col_input, col_graph = st.columns([1, 1])
             with col_input:
                 st.markdown("### Flow Simulation")
@@ -920,10 +918,9 @@ with t_deb:
                     with st.expander("Context"): st.json(ctx)
             with col_graph:
                 st.markdown("### Trace")
-                # Ensure path is valid and step still exists
                 current_path = st.session_state["debug_res"][2] if "debug_res" in st.session_state else None
                 render_flow_static_svg(current_def, current_path, key_suffix="debug")
         else:
-            st.warning("Please select a **ZIS::Flow** resource from the dropdown above to debug.")
+            st.warning("Please select a **ZIS::Flow** resource.")
     else:
         st.warning("No resource selected.")
