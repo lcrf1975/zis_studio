@@ -619,6 +619,7 @@ with t_imp:
                 url = f"{get_base_url()}/{it['int']}/bundles/{it['uuid'] or it['bun']}"
                 r = requests.get(url, auth=get_auth())
                 if r.status_code == 200:
+                    # [NEW IMPORT LOGIC]
                     imported_resources = r.json().get("resources", {})
                     new_bundle_map = {}
                     
@@ -648,6 +649,9 @@ with t_imp:
                         st.session_state["editor_content"] = formatted_js
                         st.session_state["last_synced_code"] = formatted_js
                         
+                        # [FIX] Force editor key increment to refresh the component content
+                        st.session_state["editor_key"] += 1
+                        
                         st.toast("Bundle Loaded!", icon="🎉"); time.sleep(0.5); force_refresh()
                     else:
                         st.warning("Bundle is empty.")
@@ -656,6 +660,14 @@ with t_code:
     # Use independent state key: "res_selection_code"
     render_resource_manager("code_tab", "res_selection_code")
     st.divider()
+
+    # [FIX] Ensure editor content is loaded if empty
+    target_key = st.session_state.get("res_selection_code")
+    if target_key and st.session_state.get("editor_content") == "":
+        curr_def = st.session_state["bundle_resources"][target_key]["properties"]["definition"]
+        content = json.dumps(curr_def, indent=2)
+        st.session_state["editor_content"] = content
+        st.session_state["editor_key"] += 1
 
     dk = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
