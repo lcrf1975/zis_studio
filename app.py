@@ -332,15 +332,29 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
             if start_step: dot.edge("START", start_step)
 
             for k, v in sorted_items:
+                # 1. Normal Next
                 next_step = get_zis_key(v, "Next")
                 if next_step: dot.edge(k, next_step)
+                
+                # 2. Choice Default
                 default_step = get_zis_key(v, "Default")
                 if default_step: dot.edge(k, default_step, label="Default", fontsize='10', fontcolor='#666666')
+                
+                # 3. Choice Rules
                 choices = get_zis_key(v, "Choices", [])
                 for c in choices:
                     c_next = get_zis_key(c, "Next")
                     if c_next: dot.edge(k, c_next, label="Match", fontsize='10', fontcolor='#666666')
                 
+                # 4. Catch Errors [NEW]
+                catch_list = get_zis_key(v, "Catch", [])
+                if isinstance(catch_list, list):
+                    for c in catch_list:
+                        c_next = get_zis_key(c, "Next")
+                        if c_next:
+                            dot.edge(k, c_next, label="Catch Error", style="dashed", fontsize='10', fontcolor='#D32F2F', color='#D32F2F')
+
+                # 5. Terminals
                 sType = get_zis_key(v, "Type", "Unknown")
                 is_explicit_end = get_zis_key(v, "End", False)
                 is_terminal = sType in ["Succeed", "Fail"]
