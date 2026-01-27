@@ -139,13 +139,11 @@ def sanitize_step(step_data):
 def get_flow_to_render(specific_key=None):
     if specific_key:
         res = st.session_state["bundle_resources"].get(specific_key)
-        # Robust access
         r_type = get_zis_key(res, "type", "")
         if res and r_type == "ZIS::Flow":
             props = res.get("properties", {})
             return props.get("definition", {}), specific_key
 
-    # Fallback search
     for k, v in st.session_state["bundle_resources"].items():
         r_type = get_zis_key(v, "type", "")
         if r_type == "ZIS::Flow":
@@ -248,15 +246,19 @@ if "bundle_resources" not in st.session_state:
         }
     }
 
-for k in ["res_selection_code", "res_selection_vis", "res_selection_deb"]:
-    if k not in st.session_state:
-        keys = list(st.session_state["bundle_resources"].keys())
-        st.session_state[k] = keys[0] if keys else None
+# [FIX] Smarter Initialization to prefer Flows for Debugger
+all_keys = list(st.session_state["bundle_resources"].keys())
+flow_keys = [k for k,v in st.session_state["bundle_resources"].items() if get_zis_key(v, "type") == "ZIS::Flow"]
 
-if "res_selection_deb" not in st.session_state or st.session_state["res_selection_deb"] is None:
-    res = st.session_state["bundle_resources"]
-    flows = [k for k,v in res.items() if get_zis_key(v, "type") == "ZIS::Flow"]
-    st.session_state["res_selection_deb"] = flows[0] if flows else (list(res.keys())[0] if res else None)
+if "res_selection_code" not in st.session_state:
+    st.session_state["res_selection_code"] = all_keys[0] if all_keys else None
+
+if "res_selection_vis" not in st.session_state:
+    st.session_state["res_selection_vis"] = all_keys[0] if all_keys else None
+
+if "res_selection_deb" not in st.session_state:
+    # Prefer flow, fallback to any, fallback to None
+    st.session_state["res_selection_deb"] = flow_keys[0] if flow_keys else (all_keys[0] if all_keys else None)
 
 if "editor_key" not in st.session_state: st.session_state["editor_key"] = 0 
 if "ui_render_key" not in st.session_state: st.session_state["ui_render_key"] = 0
@@ -328,21 +330,17 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
             if start_step: dot.edge("START", start_step)
 
             for k, v in sorted_items:
-                # 1. Normal Next
                 next_step = get_zis_key(v, "Next")
                 if next_step: dot.edge(k, next_step)
                 
-                # 2. Choice Default
                 default_step = get_zis_key(v, "Default")
                 if default_step: dot.edge(k, default_step, label="Default", fontsize='10', fontcolor='#666666')
                 
-                # 3. Choice Rules
                 choices = get_zis_key(v, "Choices", [])
                 for c in choices:
                     c_next = get_zis_key(c, "Next")
                     if c_next: dot.edge(k, c_next, label="Match", fontsize='10', fontcolor='#666666')
                 
-                # 4. Catch Errors
                 catch_list = get_zis_key(v, "Catch", [])
                 if isinstance(catch_list, list):
                     for c in catch_list:
@@ -350,7 +348,6 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
                         if c_next:
                             dot.edge(k, c_next, label="Catch Error", style="dashed", fontsize='10', fontcolor='#D32F2F', color='#D32F2F')
 
-                # 5. Terminals
                 sType = get_zis_key(v, "Type", "Unknown")
                 is_explicit_end = get_zis_key(v, "End", False)
                 is_terminal = sType in ["Succeed", "Fail"]
@@ -458,24 +455,19 @@ def render_resource_manager(location_key, selection_state_key, allowed_types=Non
         else:
             res_keys = list(res_map.keys())
         
-        # [FIX] Auto-Sync Selection Logic
-        # If the currently selected key is invalid (not in filtered list), snap to first available.
         current_selection = st.session_state.get(selection_state_key)
         
-        # Scenario 1: No valid resources exist for this view
+        # [FIX] Auto-correct selection if invalid for current view
         if not res_keys:
              st.warning("No matching resources.")
              selected_key = None
              if current_selection is not None:
                  st.session_state[selection_state_key] = None
-                 # No forced refresh needed, just clear selection
-        
-        # Scenario 2: Valid resources exist, but current selection is invalid/mismatch
         elif current_selection not in res_keys:
-            # Snap to first item
+            # Snap to first item and refresh
             st.session_state[selection_state_key] = res_keys[0]
             current_selection = res_keys[0]
-            force_refresh() # Rerun to ensure UI below uses valid key
+            force_refresh()
             
         col_sel, col_type, col_act = st.columns([3, 1, 1])
         
@@ -936,6 +928,11 @@ with t_deb:
     current_sel_key = st.session_state.get("res_selection_deb")
     current_res_obj = st.session_state["bundle_resources"].get(current_sel_key)
     
+    # [FIX] Auto-Sync changes from Editor if debugging the same file
+    if st.session_state.get("res_selection_code") == current_sel_key:
+        ok, err = try_sync_from_editor(current_sel_key, force_ui_update=False)
+        if not ok: st.error(f"⚠️ Invalid JSON in Code Editor: {err}")
+
     if current_res_obj:
         current_type = get_zis_key(current_res_obj, "type", "Unknown")
         current_def = current_res_obj.get("properties", {}).get("definition", {})
