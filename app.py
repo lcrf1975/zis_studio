@@ -35,12 +35,10 @@ def force_refresh():
 def clean_json_string(json_str):
     if not isinstance(json_str, str): return ""
     json_str = json_str.strip()
-    # Remove markdown code blocks if present
     json_str = re.sub(r'^```[a-zA-Z]*\s*', '', json_str)
     json_str = re.sub(r'\s*```$', '', json_str)
     json_str = json_str.replace("\u00a0", " ")
     
-    # Remove comments (simple C-style)
     pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
     def replace(match):
         if match.group(1): return match.group(1) 
@@ -166,7 +164,6 @@ def try_sync_from_editor(target_resource_key, new_content=None, force_ui_update=
     if not should_process: return True, None
 
     if not content or not content.strip():
-        # Revert to current state if empty
         curr_res = st.session_state["bundle_resources"].get(target_resource_key, {})
         def_content = curr_res.get("properties", {}).get("definition", {})
         content = json.dumps(def_content, indent=2)
@@ -178,7 +175,6 @@ def try_sync_from_editor(target_resource_key, new_content=None, force_ui_update=
         cleaned_content = clean_json_string(content)
         js = json.loads(cleaned_content)
         
-        # Handle cases where user pastes full resource structure instead of just definition
         if "properties" in js and "definition" in js["properties"]:
             js = js["properties"]["definition"]
         elif "definition" in js:
@@ -186,7 +182,6 @@ def try_sync_from_editor(target_resource_key, new_content=None, force_ui_update=
 
         norm_js = normalize_zis_keys(clean_resource_definition(js))
         
-        # Safe update
         if target_resource_key in st.session_state["bundle_resources"]:
             st.session_state["bundle_resources"][target_resource_key]["properties"]["definition"] = norm_js
         
@@ -253,14 +248,11 @@ if "bundle_resources" not in st.session_state:
         }
     }
 
-# Ensure selection keys exist
 for k in ["res_selection_code", "res_selection_vis", "res_selection_deb"]:
     if k not in st.session_state:
-        # Default to first available key or None
         keys = list(st.session_state["bundle_resources"].keys())
         st.session_state[k] = keys[0] if keys else None
 
-# Special case for debug selection to prefer Flows
 if "res_selection_deb" not in st.session_state or st.session_state["res_selection_deb"] is None:
     res = st.session_state["bundle_resources"]
     flows = [k for k,v in res.items() if get_zis_key(v, "type") == "ZIS::Flow"]
@@ -305,7 +297,6 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
     if not HAS_GRAPHVIZ: 
         return st.warning("Graphviz not installed. Please add 'graphviz' to requirements.txt")
 
-    # Safe access for hashing
     content_sig = json.dumps(flow_def, sort_keys=True) + str(highlight_path) + str(selected_step)
     current_hash = hashlib.md5(content_sig.encode()).hexdigest()
     
@@ -467,16 +458,30 @@ def render_resource_manager(location_key, selection_state_key, allowed_types=Non
         else:
             res_keys = list(res_map.keys())
         
+        # [FIX] Auto-Sync Selection Logic
+        # If the currently selected key is invalid (not in filtered list), snap to first available.
+        current_selection = st.session_state.get(selection_state_key)
+        
+        # Scenario 1: No valid resources exist for this view
+        if not res_keys:
+             st.warning("No matching resources.")
+             selected_key = None
+             if current_selection is not None:
+                 st.session_state[selection_state_key] = None
+                 # No forced refresh needed, just clear selection
+        
+        # Scenario 2: Valid resources exist, but current selection is invalid/mismatch
+        elif current_selection not in res_keys:
+            # Snap to first item
+            st.session_state[selection_state_key] = res_keys[0]
+            current_selection = res_keys[0]
+            force_refresh() # Rerun to ensure UI below uses valid key
+            
         col_sel, col_type, col_act = st.columns([3, 1, 1])
         
         with col_sel:
-            if not res_keys:
-                 st.warning("No matching resources.")
-                 selected_key = None
-            else:
-                curr_val = st.session_state.get(selection_state_key)
-                if curr_val not in res_keys: curr_idx = 0
-                else: curr_idx = res_keys.index(curr_val)
+            if res_keys:
+                curr_idx = res_keys.index(current_selection) if current_selection in res_keys else 0
                 
                 widget_key = f"res_sel_{location_key}"
                 if "code" in selection_state_key: cb = handle_resource_change_code
@@ -490,6 +495,8 @@ def render_resource_manager(location_key, selection_state_key, allowed_types=Non
                     on_change=cb,
                     args=(widget_key, selection_state_key)
                 )
+            else:
+                selected_key = None
 
         if selected_key:
             current_res = res_map.get(selected_key)
@@ -506,7 +513,7 @@ def render_resource_manager(location_key, selection_state_key, allowed_types=Non
                     if len(list(res_map.keys())) > 1: 
                         if st.button("🗑️ Del", type="secondary", key=f"del_{location_key}"):
                             del st.session_state["bundle_resources"][selected_key]
-                            # Robustly handle post-delete selection
+                            
                             rem_keys = list(st.session_state["bundle_resources"].keys())
                             if rem_keys:
                                 st.session_state[selection_state_key] = rem_keys[0]
@@ -514,7 +521,6 @@ def render_resource_manager(location_key, selection_state_key, allowed_types=Non
                                 st.session_state[selection_state_key] = None
 
                             if "code" in selection_state_key:
-                                # Update editor if there are resources left, else clear
                                 if rem_keys:
                                     handle_resource_change_code(widget_key, selection_state_key)
                                 else:
@@ -591,7 +597,6 @@ with t_imp:
             try:
                 with st.status("🔍 Scanning Zendesk Integrations...", expanded=True) as status:
                     status.write("Fetching Integrations list...")
-                    # Safe request with timeout
                     try:
                         resp = requests.get(f"{get_base_url()}/integrations", auth=get_auth(), timeout=15)
                     except Exception as e:
@@ -676,7 +681,6 @@ with t_code:
 
     target_key = st.session_state.get("res_selection_code")
     
-    # Safe load content if empty
     if target_key and st.session_state.get("editor_content") == "":
         res_obj = st.session_state["bundle_resources"].get(target_key)
         if res_obj:
@@ -723,7 +727,6 @@ with t_vis:
     flow_to_show_def, flow_to_show_name = get_flow_to_render(current_sel_key)
     ui_key = st.session_state["ui_render_key"]
     
-    # [FIX] Initialize variable strictly before conditional blocks
     sel = None
     current_type = None
 
@@ -792,7 +795,6 @@ with t_vis:
                             with st.expander(f"Rule {i+1}"):
                                 ch["Variable"] = st.text_input("Var", get_zis_key(ch, "Variable", ""), key=f"cv_{i}_{sel}_{ui_key}")
                                 
-                                # [UPDATED] Full Operator List
                                 ops = [
                                     "StringEquals", "StringMatches", "StringLessThan", "StringLessThanEquals", "StringGreaterThan", "StringGreaterThanEquals",
                                     "BooleanEquals", 
@@ -878,7 +880,6 @@ with t_vis:
     with main_c2:
         if flow_to_show_def:
             st.markdown(f"**Viewing Flow: `{flow_to_show_name}`**")
-            # [CRITICAL FIX] Safe access logic
             step_to_highlight = sel if (current_type == "ZIS::Flow" and sel and sel != "(Select)") else None
             render_flow_static_svg(flow_to_show_def, selected_step=step_to_highlight, key_suffix="vis")
         else:
@@ -947,7 +948,6 @@ with t_deb:
                 st.markdown("### Flow Simulation")
                 inp = st.text_area("JSON Input", '{"ticket": {"id": 123}}', height=200, key="debug_input")
                 if st.button("▶️ Run Simulation", type="primary"):
-                    # [FIX] Safe JSON decode
                     try:
                         input_json = json.loads(inp)
                         eng = ZISFlowEngine(normalize_zis_keys(current_def), input_json, {}, {})
