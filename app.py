@@ -685,6 +685,9 @@ with t_vis:
     flow_to_show_def, flow_to_show_name = get_flow_to_render(current_sel_key)
     ui_key = st.session_state["ui_render_key"]
     
+    # [FIX] Initialize 'sel' to None to prevent NameError
+    sel = None
+
     main_c1, main_c2 = st.columns([1, 1])
 
     if current_res_obj:
@@ -713,7 +716,7 @@ with t_vis:
                         force_refresh()
                 
                 st.divider()
-                if sel != "(Select)" and sel in states:
+                if sel and sel != "(Select)" and sel in states:
                     s_dat = states[sel]; sanitize_step(s_dat); s_typ = get_zis_key(s_dat, "Type")
                     st.markdown(f"### {sel} `[{s_typ}]`")
                     if s_typ not in ["Succeed", "Fail", "Choice"]:
@@ -837,11 +840,11 @@ with t_vis:
     with main_c2:
         if flow_to_show_def:
             st.markdown(f"**Viewing Flow: `{flow_to_show_name}`**")
-            step_to_highlight = sel if (current_type == "ZIS::Flow" and 'sel' in locals() and sel != "(Select)") else None
+            # [FIX] Safer logic. 'sel' is guaranteed to be None or a string now.
+            step_to_highlight = sel if (current_type == "ZIS::Flow" and sel and sel != "(Select)") else None
             render_flow_static_svg(flow_to_show_def, selected_step=step_to_highlight, key_suffix="vis")
         else:
             st.info("No Flows found in this bundle.")
-
 
 with t_dep:
     if not st.session_state.get("is_connected"): st.warning("Connect in Settings first.")
