@@ -480,16 +480,19 @@ def render_resource_manager(location_key, selection_state_key, allowed_types=Non
         
         with col_sel:
             if res_keys:
-                curr_idx = res_keys.index(current_selection) if current_selection in res_keys else 0
-                
                 widget_key = f"res_sel_{location_key}"
+                
+                # [CRITICAL FIX] Ensure session state is initialized for the widget
+                if widget_key not in st.session_state:
+                    st.session_state[widget_key] = current_selection
+
                 if "code" in selection_state_key: cb = handle_resource_change_code
                 else: cb = handle_resource_change_generic
 
+                # [CRITICAL FIX] Removed 'index=curr_idx'. The widget relies on st.session_state[widget_key].
                 selected_key = st.selectbox(
                     "Select File", 
                     res_keys, 
-                    index=curr_idx, 
                     key=widget_key,
                     on_change=cb,
                     args=(widget_key, selection_state_key)
@@ -516,8 +519,11 @@ def render_resource_manager(location_key, selection_state_key, allowed_types=Non
                             rem_keys = list(st.session_state["bundle_resources"].keys())
                             if rem_keys:
                                 st.session_state[selection_state_key] = rem_keys[0]
+                                # Also update widget state to prevent stale selection error
+                                st.session_state[f"res_sel_{location_key}"] = rem_keys[0]
                             else:
                                 st.session_state[selection_state_key] = None
+                                st.session_state[f"res_sel_{location_key}"] = None
 
                             if "code" in selection_state_key:
                                 if rem_keys:
@@ -555,6 +561,9 @@ def render_resource_manager(location_key, selection_state_key, allowed_types=Non
                                 "properties": {"name": safe_name, "definition": def_def}
                             }
                             st.session_state[selection_state_key] = safe_name 
+                            # Update widget state to match new creation
+                            st.session_state[f"res_sel_{location_key}"] = safe_name
+
                             if "code" in selection_state_key:
                                 formatted_json = json.dumps(def_def, indent=2)
                                 st.session_state["editor_content"] = formatted_json
@@ -819,6 +828,7 @@ with t_vis:
                                 
                                 for op in ops: ch.pop(op, None); ch.pop(op.lower(), None)
                                 
+                                # Basic Type Inference for Save
                                 real_val = new_val
                                 if "Numeric" in new_op: 
                                     try: real_val = float(new_val)
