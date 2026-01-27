@@ -3,6 +3,8 @@ import requests
 import re
 import copy
 import json
+import fnmatch
+from datetime import datetime
 from jsonpath_ng import parse
 
 class ZISActionTester:
@@ -19,10 +21,6 @@ class ZISActionTester:
             "ActionName": "TestRunner",
             "Parameters": params_input
         }
-        
-        # Need to merge definition properties into the params expected by logic
-        # In ZIS Bundle, Action definition has { url, method, etc }
-        # We simulate passing these as if they were parameters to the engine
         
         # Merge action definition props (url, method) with user input params
         combined_params = {**action_def, **params_input}
@@ -64,7 +62,6 @@ class ZISFlowEngine:
     def set_nested_value(self, path, value):
         """
         Sets value at path like '$.ticket.user.id', creating intermediates.
-        Fixes the issue where context keys were being overwritten at the root.
         """
         if not path or not path.startswith("$."):
             return
@@ -96,12 +93,8 @@ class ZISFlowEngine:
         path_key = "InputPath" if is_input else "OutputPath"
         path = state.get(path_key)
         
-        # Default behavior: InputPath=$ (pass all), OutputPath=$ (pass all)
-        if path is None: 
-            return current_data
-            
-        if path == "$":
-            return current_data
+        if path is None: return current_data
+        if path == "$": return current_data
             
         return self.resolve_path(path, current_data)
 
@@ -112,7 +105,6 @@ class ZISFlowEngine:
         
         resolved_params = {}
         for k, v in params.items():
-            # Handle .$ suffix for dynamic parameters
             key = k[:-2] if k.endswith(".$") else k
             if k.endswith(".$"):
                 val = self.resolve_path(v, self.context)
@@ -122,32 +114,17 @@ class ZISFlowEngine:
 
         self.log(state_name, f"Executing Action: {action_name}", "RUNNING")
         
-        # Merge strategies: 
-        # In a real ZIS flow, the 'definition' of the Custom Action (url, method) is merged with 
-        # the parameters passed in the Flow State.
-        # Here we assume resolved_params contains everything needed (url, method, body, headers).
-        
         url = resolved_params.get("url", "")
         method = resolved_params.get("method", "GET")
-        
-        # Handle body/payload
-        # ZIS often sends 'body' param as the JSON payload
-        # Or 'requestBody' in Action definitions
         payload = resolved_params.get("body") or resolved_params.get("requestBody")
         
-        # Ensure payload is dict if possible for logging/requests
         if isinstance(payload, str):
-            try:
-                payload = json.loads(payload)
-            except:
-                pass
+            try: payload = json.loads(payload)
+            except: pass
 
         if url:
             try:
-                # Basic auth simulation if headers present
                 headers = resolved_params.get("headers", {})
-                
-                # If headers is a list (ZIS standard), convert to dict for requests
                 req_headers = {}
                 if isinstance(headers, list):
                     for h in headers:
@@ -159,11 +136,8 @@ class ZISFlowEngine:
                 response = requests.request(method, url, json=payload, headers=req_headers)
                 status_msg = f"API Hit: {url} [{response.status_code}]"
                 
-                # Try parsing response
-                try:
-                    resp_json = response.json()
-                except:
-                    resp_json = {"raw_text": response.text}
+                try: resp_json = response.json()
+                except: resp_json = {"raw_text": response.text}
 
                 if response.status_code >= 400:
                     self.log(state_name, status_msg, "ERROR")
@@ -183,6 +157,98 @@ class ZISFlowEngine:
                 "input_params": resolved_params
             }
 
+    # [NEW] Recursive Rule Evaluator
+    def evaluate_rule(self, rule, context):
+        """
+        Recursively evaluates ASL Choice rules including Logic (And/Or/Not)
+        and Comparisons (String, Numeric, Timestamp, Boolean).
+        """
+        # 1. Handle Logical Operators (Recursive)
+        if "And" in rule:
+            return all(self.evaluate_rule(sub, context) for sub in rule["And"])
+        if "Or" in rule:
+            return any(self.evaluate_rule(sub, context) for sub in rule["Or"])
+        if "Not" in rule:
+            return not self.evaluate_rule(rule["Not"], context)
+
+        # 2. Resolve Variable (Required for comparisons)
+        var_path = rule.get("Variable")
+        if not var_path: return False
+            
+        val = self.resolve_path(var_path, context)
+
+        # 3. Existence Checks
+        if "IsPresent" in rule:
+            exists = val is not None
+            # Handle string "true"/"false" if passed from basic UI
+            target = rule["IsPresent"]
+            if isinstance(target, str): target = target.lower() == "true"
+            return exists if target else not exists
+        if "IsNull" in rule:
+            is_null = val is None
+            target = rule["IsNull"]
+            if isinstance(target, str): target = target.lower() == "true"
+            return is_null if target else not is_null
+
+        # 4. String Comparisons
+        str_val = str(val) if val is not None else ""
+        if "StringEquals" in rule:
+            return str_val == str(rule["StringEquals"])
+        if "StringLessThan" in rule:
+            return str_val < str(rule["StringLessThan"])
+        if "StringLessThanEquals" in rule:
+            return str_val <= str(rule["StringLessThanEquals"])
+        if "StringGreaterThan" in rule:
+            return str_val > str(rule["StringGreaterThan"])
+        if "StringGreaterThanEquals" in rule:
+            return str_val >= str(rule["StringGreaterThanEquals"])
+        if "StringMatches" in rule:
+            return fnmatch.fnmatch(str_val, str(rule["StringMatches"]))
+
+        # 5. Numeric Comparisons
+        def safe_float(v):
+            try: return float(v)
+            except: return None
+
+        num_val = safe_float(val)
+        if num_val is not None:
+            if "NumericEquals" in rule:
+                return num_val == safe_float(rule["NumericEquals"])
+            if "NumericLessThan" in rule:
+                return num_val < safe_float(rule["NumericLessThan"])
+            if "NumericLessThanEquals" in rule:
+                return num_val <= safe_float(rule["NumericLessThanEquals"])
+            if "NumericGreaterThan" in rule:
+                return num_val > safe_float(rule["NumericGreaterThan"])
+            if "NumericGreaterThanEquals" in rule:
+                return num_val >= safe_float(rule["NumericGreaterThanEquals"])
+
+        # 6. Boolean Comparisons
+        if "BooleanEquals" in rule:
+            target = rule["BooleanEquals"]
+            if isinstance(target, str): target = target.lower() == "true"
+            return bool(val) == bool(target)
+
+        # 7. Timestamp Comparisons
+        def safe_date(d):
+            try: return datetime.fromisoformat(str(d).replace('Z', '+00:00'))
+            except: return None
+
+        dt_val = safe_date(val)
+        if dt_val is not None:
+            if "TimestampEquals" in rule:
+                return dt_val == safe_date(rule["TimestampEquals"])
+            if "TimestampLessThan" in rule:
+                return dt_val < safe_date(rule["TimestampLessThan"])
+            if "TimestampLessThanEquals" in rule:
+                return dt_val <= safe_date(rule["TimestampLessThanEquals"])
+            if "TimestampGreaterThan" in rule:
+                return dt_val > safe_date(rule["TimestampGreaterThan"])
+            if "TimestampGreaterThanEquals" in rule:
+                return dt_val >= safe_date(rule["TimestampGreaterThanEquals"])
+
+        return False
+
     def run(self):
         flow_def = self.flow.get("definition", self.flow)
         current_state_name = flow_def.get("StartAt")
@@ -201,11 +267,6 @@ class ZISFlowEngine:
             if not state:
                 self.log("ERROR", f"State {current_state_name} not found", "FAIL")
                 break
-
-            # 1. Apply InputPath (Filter data entering the state)
-            # input_data = self.apply_io_path(state, self.context, is_input=True) 
-            # Note: For simplicity in this engine, we keep self.context global, 
-            # but in real ZIS, InputPath limits what "Parameters" can see. 
             
             state_type = state.get("Type")
             result = None
@@ -222,31 +283,11 @@ class ZISFlowEngine:
                 matched = False
                 
                 for rule in choices:
-                    variable = self.resolve_path(rule.get("Variable"), self.context)
-                    
-                    # [UPDATE] Extended Logic Support for Comparisons
-                    try:
-                        if "StringEquals" in rule and str(variable) == str(rule["StringEquals"]):
-                            matched = True
-                        elif "BooleanEquals" in rule and bool(variable) == bool(rule["BooleanEquals"]):
-                            matched = True
-                        elif "NumericEquals" in rule and float(variable) == float(rule["NumericEquals"]):
-                            matched = True
-                        elif "NumericGreaterThan" in rule and float(variable) > float(rule["NumericGreaterThan"]):
-                            matched = True
-                        elif "NumericGreaterThanEquals" in rule and float(variable) >= float(rule["NumericGreaterThanEquals"]):
-                            matched = True
-                        elif "NumericLessThan" in rule and float(variable) < float(rule["NumericLessThan"]):
-                            matched = True
-                        elif "NumericLessThanEquals" in rule and float(variable) <= float(rule["NumericLessThanEquals"]):
-                            matched = True
-                    except:
-                        # Fallback for type conversion errors
-                        pass
-                    
-                    if matched:
-                        next_state = rule["Next"]
-                        self.log(current_state_name, f"Rule Matched: {rule.get('Variable')}", "INFO")
+                    # [UPDATED] Use recursive evaluator
+                    if self.evaluate_rule(rule, self.context):
+                        matched = True
+                        next_state = rule.get("Next")
+                        self.log(current_state_name, "Rule Matched", "INFO")
                         break
 
                 if not matched:
@@ -257,7 +298,6 @@ class ZISFlowEngine:
                 self.log(current_state_name, "Passing through")
                 if "Result" in state:
                     result = state["Result"]
-                    # If ResultPath is present, map Result to it
                     if "ResultPath" in state:
                         self.set_nested_value(state["ResultPath"], result)
                 current_state_name = state.get("Next")
@@ -275,8 +315,6 @@ class ZISFlowEngine:
                 error = state.get("Error", "FailState")
                 self.log(current_state_name, f"Flow Failed: {error}", "FAIL")
                 break
-            
-            # 2. Apply OutputPath (Filter data leaving the state - Not fully impl in this mock)
             
             if state.get("End"):
                 self.log(current_state_name, "End of Flow reached")
