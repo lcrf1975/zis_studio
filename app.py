@@ -685,8 +685,9 @@ with t_vis:
     flow_to_show_def, flow_to_show_name = get_flow_to_render(current_sel_key)
     ui_key = st.session_state["ui_render_key"]
     
-    # [FIX] Initialize 'sel' to None to prevent NameError
+    # [CRITICAL FIX] Initialize variables strictly before conditional blocks
     sel = None
+    current_type = None
 
     main_c1, main_c2 = st.columns([1, 1])
 
@@ -772,7 +773,6 @@ with t_vis:
                                 
                                 for op in ops: ch.pop(op, None); ch.pop(op.lower(), None)
                                 
-                                # Basic Type Inference for Save
                                 real_val = new_val
                                 if "Numeric" in new_op: 
                                     try: real_val = float(new_val)
@@ -840,7 +840,7 @@ with t_vis:
     with main_c2:
         if flow_to_show_def:
             st.markdown(f"**Viewing Flow: `{flow_to_show_name}`**")
-            # [FIX] Safer logic. 'sel' is guaranteed to be None or a string now.
+            # [CRITICAL FIX] Safe access logic
             step_to_highlight = sel if (current_type == "ZIS::Flow" and sel and sel != "(Select)") else None
             render_flow_static_svg(flow_to_show_def, selected_step=step_to_highlight, key_suffix="vis")
         else:
