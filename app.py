@@ -139,6 +139,7 @@ def sanitize_step(step_data):
 def get_flow_to_render(specific_key=None):
     if specific_key:
         res = st.session_state["bundle_resources"].get(specific_key)
+        # Robust access
         r_type = get_zis_key(res, "type", "")
         if res and r_type == "ZIS::Flow":
             props = res.get("properties", {})
@@ -246,8 +247,9 @@ if "bundle_resources" not in st.session_state:
         }
     }
 
-# [FIX] Smarter Initialization to prefer Flows for Debugger
+# Ensure selection keys exist
 all_keys = list(st.session_state["bundle_resources"].keys())
+# Find flow keys for robust debug selection
 flow_keys = [k for k,v in st.session_state["bundle_resources"].items() if get_zis_key(v, "type") == "ZIS::Flow"]
 
 if "res_selection_code" not in st.session_state:
@@ -257,7 +259,7 @@ if "res_selection_vis" not in st.session_state:
     st.session_state["res_selection_vis"] = all_keys[0] if all_keys else None
 
 if "res_selection_deb" not in st.session_state:
-    # Prefer flow, fallback to any, fallback to None
+    # Prefer Flow, then any, then None
     st.session_state["res_selection_deb"] = flow_keys[0] if flow_keys else (all_keys[0] if all_keys else None)
 
 if "editor_key" not in st.session_state: st.session_state["editor_key"] = 0 
@@ -330,17 +332,21 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
             if start_step: dot.edge("START", start_step)
 
             for k, v in sorted_items:
+                # 1. Normal Next
                 next_step = get_zis_key(v, "Next")
                 if next_step: dot.edge(k, next_step)
                 
+                # 2. Choice Default
                 default_step = get_zis_key(v, "Default")
                 if default_step: dot.edge(k, default_step, label="Default", fontsize='10', fontcolor='#666666')
                 
+                # 3. Choice Rules
                 choices = get_zis_key(v, "Choices", [])
                 for c in choices:
                     c_next = get_zis_key(c, "Next")
                     if c_next: dot.edge(k, c_next, label="Match", fontsize='10', fontcolor='#666666')
                 
+                # 4. Catch Errors
                 catch_list = get_zis_key(v, "Catch", [])
                 if isinstance(catch_list, list):
                     for c in catch_list:
@@ -348,6 +354,7 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
                         if c_next:
                             dot.edge(k, c_next, label="Catch Error", style="dashed", fontsize='10', fontcolor='#D32F2F', color='#D32F2F')
 
+                # 5. Terminals
                 sType = get_zis_key(v, "Type", "Unknown")
                 is_explicit_end = get_zis_key(v, "End", False)
                 is_terminal = sType in ["Succeed", "Fail"]
@@ -655,6 +662,11 @@ with t_imp:
                                 st.session_state["res_selection_vis"] = primary_key
                                 st.session_state["res_selection_deb"] = primary_key
                                 
+                                # [FIX] Force widget state sync
+                                st.session_state["res_sel_code_tab"] = primary_key
+                                st.session_state["res_sel_vis_tab"] = primary_key
+                                st.session_state["res_sel_deb_tab"] = primary_key
+                                
                                 formatted_js = json.dumps(new_bundle_map[primary_key]["properties"]["definition"], indent=2)
                                 st.session_state["editor_content"] = formatted_js
                                 st.session_state["last_synced_code"] = formatted_js
@@ -719,6 +731,7 @@ with t_vis:
     flow_to_show_def, flow_to_show_name = get_flow_to_render(current_sel_key)
     ui_key = st.session_state["ui_render_key"]
     
+    # [FIX] Initialize variables strictly before conditional blocks
     sel = None
     current_type = None
 
@@ -787,6 +800,7 @@ with t_vis:
                             with st.expander(f"Rule {i+1}"):
                                 ch["Variable"] = st.text_input("Var", get_zis_key(ch, "Variable", ""), key=f"cv_{i}_{sel}_{ui_key}")
                                 
+                                # [UPDATED] Full Operator List
                                 ops = [
                                     "StringEquals", "StringMatches", "StringLessThan", "StringLessThanEquals", "StringGreaterThan", "StringGreaterThanEquals",
                                     "BooleanEquals", 
@@ -872,6 +886,7 @@ with t_vis:
     with main_c2:
         if flow_to_show_def:
             st.markdown(f"**Viewing Flow: `{flow_to_show_name}`**")
+            # [CRITICAL FIX] Safe access logic
             step_to_highlight = sel if (current_type == "ZIS::Flow" and sel and sel != "(Select)") else None
             render_flow_static_svg(flow_to_show_def, selected_step=step_to_highlight, key_suffix="vis")
         else:
