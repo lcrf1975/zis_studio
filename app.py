@@ -35,10 +35,12 @@ def force_refresh():
 def clean_json_string(json_str):
     if not isinstance(json_str, str): return ""
     json_str = json_str.strip()
+    # Remove markdown code blocks if present
     json_str = re.sub(r'^```[a-zA-Z]*\s*', '', json_str)
     json_str = re.sub(r'\s*```$', '', json_str)
     json_str = json_str.replace("\u00a0", " ")
     
+    # Remove comments (simple C-style)
     pattern = r'("[^"\\]*(?:\\.[^"\\]*)*")|(/\*[\s\S]*?\*/)|(//.*)'
     def replace(match):
         if match.group(1): return match.group(1) 
@@ -117,7 +119,7 @@ def clean_resource_definition(res_data):
         if key in clean: del clean[key]
     return clean
 
-# [NEW] Sanitize Step Data (Specific for Flows)
+# [HELPER] Sanitize Step Data (Specific for Flows)
 def sanitize_step(step_data):
     keys_to_fix = {
         "next": "Next", "actionname": "ActionName", 
@@ -139,14 +141,18 @@ def sanitize_step(step_data):
 def get_flow_to_render(specific_key=None):
     if specific_key:
         res = st.session_state["bundle_resources"].get(specific_key)
+        # Robust access
         r_type = get_zis_key(res, "type", "")
         if res and r_type == "ZIS::Flow":
-            return res["properties"]["definition"], specific_key
+            props = res.get("properties", {})
+            return props.get("definition", {}), specific_key
 
+    # Fallback search
     for k, v in st.session_state["bundle_resources"].items():
         r_type = get_zis_key(v, "type", "")
         if r_type == "ZIS::Flow":
-            return v["properties"]["definition"], k
+             props = v.get("properties", {})
+             return props.get("definition", {}), k
     
     return None, None
 
@@ -160,6 +166,7 @@ def try_sync_from_editor(target_resource_key, new_content=None, force_ui_update=
     if not should_process: return True, None
 
     if not content or not content.strip():
+        # Revert to current state if empty
         curr_res = st.session_state["bundle_resources"].get(target_resource_key, {})
         def_content = curr_res.get("properties", {}).get("definition", {})
         content = json.dumps(def_content, indent=2)
@@ -171,6 +178,7 @@ def try_sync_from_editor(target_resource_key, new_content=None, force_ui_update=
         cleaned_content = clean_json_string(content)
         js = json.loads(cleaned_content)
         
+        # Handle cases where user pastes full resource structure instead of just definition
         if "properties" in js and "definition" in js["properties"]:
             js = js["properties"]["definition"]
         elif "definition" in js:
@@ -178,7 +186,9 @@ def try_sync_from_editor(target_resource_key, new_content=None, force_ui_update=
 
         norm_js = normalize_zis_keys(clean_resource_definition(js))
         
-        st.session_state["bundle_resources"][target_resource_key]["properties"]["definition"] = norm_js
+        # Safe update
+        if target_resource_key in st.session_state["bundle_resources"]:
+            st.session_state["bundle_resources"][target_resource_key]["properties"]["definition"] = norm_js
         
         st.session_state["last_synced_code"] = content
         st.session_state["ui_render_key"] += 1
@@ -243,15 +253,15 @@ if "bundle_resources" not in st.session_state:
         }
     }
 
-if "res_selection_code" not in st.session_state:
-    keys = list(st.session_state["bundle_resources"].keys())
-    st.session_state["res_selection_code"] = keys[0] if keys else None
+# Ensure selection keys exist
+for k in ["res_selection_code", "res_selection_vis", "res_selection_deb"]:
+    if k not in st.session_state:
+        # Default to first available key or None
+        keys = list(st.session_state["bundle_resources"].keys())
+        st.session_state[k] = keys[0] if keys else None
 
-if "res_selection_vis" not in st.session_state:
-    keys = list(st.session_state["bundle_resources"].keys())
-    st.session_state["res_selection_vis"] = keys[0] if keys else None
-
-if "res_selection_deb" not in st.session_state:
+# Special case for debug selection to prefer Flows
+if "res_selection_deb" not in st.session_state or st.session_state["res_selection_deb"] is None:
     res = st.session_state["bundle_resources"]
     flows = [k for k,v in res.items() if get_zis_key(v, "type") == "ZIS::Flow"]
     st.session_state["res_selection_deb"] = flows[0] if flows else (list(res.keys())[0] if res else None)
@@ -260,8 +270,9 @@ if "editor_key" not in st.session_state: st.session_state["editor_key"] = 0
 if "ui_render_key" not in st.session_state: st.session_state["ui_render_key"] = 0
 
 curr_code_key = st.session_state.get("res_selection_code")
-if curr_code_key and "editor_content" not in st.session_state:
-    curr_def = st.session_state["bundle_resources"][curr_code_key]["properties"]["definition"]
+if curr_code_key and "editor_content" not in st.session_state and curr_code_key in st.session_state["bundle_resources"]:
+    curr_res = st.session_state["bundle_resources"][curr_code_key]
+    curr_def = curr_res.get("properties", {}).get("definition", {})
     content = json.dumps(curr_def, indent=2)
     st.session_state["editor_content"] = content
     st.session_state["last_synced_code"] = content
@@ -285,7 +296,7 @@ def get_base_url():
 
 def test_connection():
     try:
-        r = requests.get(f"https://{st.session_state.zd_subdomain}.zendesk.com/api/v2/users/me.json", auth=get_auth())
+        r = requests.get(f"https://{st.session_state.zd_subdomain}.zendesk.com/api/v2/users/me.json", auth=get_auth(), timeout=10)
         return (True, "Active") if r.status_code == 200 else (False, f"Error {r.status_code}")
     except Exception as e: return False, f"{str(e)}"
 
@@ -294,6 +305,7 @@ def render_flow_static_svg(flow_def, highlight_path=None, selected_step=None, ke
     if not HAS_GRAPHVIZ: 
         return st.warning("Graphviz not installed. Please add 'graphviz' to requirements.txt")
 
+    # Safe access for hashing
     content_sig = json.dumps(flow_def, sort_keys=True) + str(highlight_path) + str(selected_step)
     current_hash = hashlib.md5(content_sig.encode()).hexdigest()
     
@@ -494,11 +506,20 @@ def render_resource_manager(location_key, selection_state_key, allowed_types=Non
                     if len(list(res_map.keys())) > 1: 
                         if st.button("🗑️ Del", type="secondary", key=f"del_{location_key}"):
                             del st.session_state["bundle_resources"][selected_key]
+                            # Robustly handle post-delete selection
                             rem_keys = list(st.session_state["bundle_resources"].keys())
                             if rem_keys:
                                 st.session_state[selection_state_key] = rem_keys[0]
-                                if "code" in selection_state_key:
+                            else:
+                                st.session_state[selection_state_key] = None
+
+                            if "code" in selection_state_key:
+                                # Update editor if there are resources left, else clear
+                                if rem_keys:
                                     handle_resource_change_code(widget_key, selection_state_key)
+                                else:
+                                    st.session_state["editor_content"] = ""
+                            
                             force_refresh()
                     else:
                         st.caption("Locked")
@@ -570,9 +591,15 @@ with t_imp:
             try:
                 with st.status("🔍 Scanning Zendesk Integrations...", expanded=True) as status:
                     status.write("Fetching Integrations list...")
-                    resp = requests.get(f"{get_base_url()}/integrations", auth=get_auth())
-                    
-                    if resp.status_code == 200:
+                    # Safe request with timeout
+                    try:
+                        resp = requests.get(f"{get_base_url()}/integrations", auth=get_auth(), timeout=15)
+                    except Exception as e:
+                        status.update(label="Connection Failed", state="error")
+                        st.error(f"Network Error: {e}")
+                        resp = None
+
+                    if resp and resp.status_code == 200:
                         ints = resp.json().get("integrations", [])
                         total_ints = len(ints)
                         status.write(f"Found {total_ints} integrations. Scanning bundles...")
@@ -584,7 +611,7 @@ with t_imp:
                             progress = (idx + 1) / total_ints
                             progress_bar.progress(progress)
                             try:
-                                b_resp = requests.get(f"{get_base_url()}/{nm}/bundles", auth=get_auth())
+                                b_resp = requests.get(f"{get_base_url()}/{nm}/bundles", auth=get_auth(), timeout=5)
                                 if b_resp.status_code == 200:
                                     bundles = b_resp.json().get("bundles", [])
                                     for b in bundles:
@@ -592,60 +619,71 @@ with t_imp:
                             except: pass
                         st.session_state["scan_results"] = res
                         status.update(label=f"Found {len(res)} bundles.", state="complete", expanded=False)
-                    else:
-                        st.error(f"API Error: {resp.status_code}")
+                    elif resp:
+                        st.error(f"API Error: {resp.status_code} - {resp.text}")
             except Exception as e: st.error(str(e))
 
         if "scan_results" in st.session_state:
             res = st.session_state["scan_results"]
-            sel = st.selectbox("Bundles", range(len(res)), format_func=lambda i: f"{res[i]['int']} / {res[i]['bun']}")
-            if st.button("Load Bundle"):
-                it = res[sel]
-                url = f"{get_base_url()}/{it['int']}/bundles/{it['uuid'] or it['bun']}"
-                r = requests.get(url, auth=get_auth())
-                if r.status_code == 200:
-                    imported_resources = r.json().get("resources", {})
-                    new_bundle_map = {}
-                    
-                    for res_key, res_data in imported_resources.items():
-                        r_type = get_zis_key(res_data, "type", "Unknown")
-                        r_props = res_data.get("properties", {})
-                        r_def = r_props.get("definition", {})
-                        
-                        clean_def = normalize_zis_keys(clean_resource_definition(r_def))
-                        r_props["definition"] = clean_def
-                        res_data["properties"] = r_props
-                        new_bundle_map[res_key] = res_data
-                    
-                    if new_bundle_map:
-                        st.session_state["bundle_resources"] = new_bundle_map
-                        
-                        flows = [k for k,v in new_bundle_map.items() if get_zis_key(v, "type") == "ZIS::Flow"]
-                        primary_key = flows[0] if flows else list(new_bundle_map.keys())[0]
-                        
-                        st.session_state["res_selection_code"] = primary_key
-                        st.session_state["res_selection_vis"] = primary_key
-                        st.session_state["res_selection_deb"] = primary_key
-                        
-                        formatted_js = json.dumps(new_bundle_map[primary_key]["properties"]["definition"], indent=2)
-                        st.session_state["editor_content"] = formatted_js
-                        st.session_state["last_synced_code"] = formatted_js
-                        st.session_state["editor_key"] += 1
-                        
-                        st.toast("Bundle Loaded!", icon="🎉"); time.sleep(0.5); force_refresh()
-                    else:
-                        st.warning("Bundle is empty.")
+            if not res:
+                st.warning("No bundles found.")
+            else:
+                sel = st.selectbox("Bundles", range(len(res)), format_func=lambda i: f"{res[i]['int']} / {res[i]['bun']}")
+                if st.button("Load Bundle"):
+                    it = res[sel]
+                    url = f"{get_base_url()}/{it['int']}/bundles/{it['uuid'] or it['bun']}"
+                    try:
+                        r = requests.get(url, auth=get_auth(), timeout=10)
+                        if r.status_code == 200:
+                            imported_resources = r.json().get("resources", {})
+                            new_bundle_map = {}
+                            
+                            for res_key, res_data in imported_resources.items():
+                                r_type = get_zis_key(res_data, "type", "Unknown")
+                                r_props = res_data.get("properties", {})
+                                r_def = r_props.get("definition", {})
+                                
+                                clean_def = normalize_zis_keys(clean_resource_definition(r_def))
+                                r_props["definition"] = clean_def
+                                res_data["properties"] = r_props
+                                new_bundle_map[res_key] = res_data
+                            
+                            if new_bundle_map:
+                                st.session_state["bundle_resources"] = new_bundle_map
+                                
+                                flows = [k for k,v in new_bundle_map.items() if get_zis_key(v, "type") == "ZIS::Flow"]
+                                primary_key = flows[0] if flows else list(new_bundle_map.keys())[0]
+                                
+                                st.session_state["res_selection_code"] = primary_key
+                                st.session_state["res_selection_vis"] = primary_key
+                                st.session_state["res_selection_deb"] = primary_key
+                                
+                                formatted_js = json.dumps(new_bundle_map[primary_key]["properties"]["definition"], indent=2)
+                                st.session_state["editor_content"] = formatted_js
+                                st.session_state["last_synced_code"] = formatted_js
+                                st.session_state["editor_key"] += 1
+                                
+                                st.toast("Bundle Loaded!", icon="🎉"); time.sleep(0.5); force_refresh()
+                            else:
+                                st.warning("Bundle is empty.")
+                        else:
+                            st.error(f"Failed to load bundle: {r.status_code}")
+                    except Exception as e: st.error(f"Network error: {e}")
 
 with t_code:
     render_resource_manager("code_tab", "res_selection_code")
     st.divider()
 
     target_key = st.session_state.get("res_selection_code")
+    
+    # Safe load content if empty
     if target_key and st.session_state.get("editor_content") == "":
-        curr_def = st.session_state["bundle_resources"][target_key]["properties"]["definition"]
-        content = json.dumps(curr_def, indent=2)
-        st.session_state["editor_content"] = content
-        st.session_state["editor_key"] += 1
+        res_obj = st.session_state["bundle_resources"].get(target_key)
+        if res_obj:
+            curr_def = res_obj.get("properties", {}).get("definition", {})
+            content = json.dumps(curr_def, indent=2)
+            st.session_state["editor_content"] = content
+            st.session_state["editor_key"] += 1
 
     dk = f"code_editor_{st.session_state['editor_key']}"
     if HAS_EDITOR:
@@ -685,7 +723,7 @@ with t_vis:
     flow_to_show_def, flow_to_show_name = get_flow_to_render(current_sel_key)
     ui_key = st.session_state["ui_render_key"]
     
-    # [CRITICAL FIX] Initialize variables strictly before conditional blocks
+    # [FIX] Initialize variable strictly before conditional blocks
     sel = None
     current_type = None
 
@@ -693,7 +731,7 @@ with t_vis:
 
     if current_res_obj:
         current_type = get_zis_key(current_res_obj, "type", "Unknown")
-        current_def = current_res_obj["properties"]["definition"]
+        current_def = current_res_obj.get("properties", {}).get("definition", {})
 
         with main_c1:
             if current_type == "ZIS::Flow":
@@ -861,7 +899,7 @@ with t_dep:
                 with st.status("Deploying...") as status:
                     try:
                         status.write("Creating integration...")
-                        requests.post(f"{get_base_url()}/integrations", auth=get_auth(), json={"name": target_int, "display_name": target_int}, headers={"Content-Type": "application/json"})
+                        requests.post(f"{get_base_url()}/integrations", auth=get_auth(), json={"name": target_int, "display_name": target_int}, headers={"Content-Type": "application/json"}, timeout=10)
                         
                         safe_bun = bun_name.lower().strip().replace("-", "_").replace(" ", "")
                         
@@ -870,7 +908,7 @@ with t_dep:
                         
                         for r_key, r_val in res_map.items():
                             r_copy = copy.deepcopy(r_val)
-                            def_clean = clean_resource_definition(r_copy["properties"]["definition"])
+                            def_clean = clean_resource_definition(r_copy.get("properties", {}).get("definition", {}))
                             r_copy["properties"]["definition"] = def_clean
                             resources_payload[r_key] = r_copy
 
@@ -881,7 +919,7 @@ with t_dep:
                         }
                         
                         status.write(f"Uploading {len(resources_payload)} resources...")
-                        r = requests.post(f"{get_base_url()}/{target_int}/bundles", auth=get_auth(), json=payload, headers={"Content-Type": "application/json"})
+                        r = requests.post(f"{get_base_url()}/{target_int}/bundles", auth=get_auth(), json=payload, headers={"Content-Type": "application/json"}, timeout=15)
                         
                         if r.status_code in [200, 201]:
                             st.balloons(); status.update(label="Deployed!", state="complete"); st.success(f"Deployed {safe_bun} to {target_int}")
@@ -899,7 +937,7 @@ with t_deb:
     
     if current_res_obj:
         current_type = get_zis_key(current_res_obj, "type", "Unknown")
-        current_def = current_res_obj["properties"]["definition"]
+        current_def = current_res_obj.get("properties", {}).get("definition", {})
         
         st.info(f"Currently Debugging: **{current_sel_key}**")
 
@@ -909,9 +947,17 @@ with t_deb:
                 st.markdown("### Flow Simulation")
                 inp = st.text_area("JSON Input", '{"ticket": {"id": 123}}', height=200, key="debug_input")
                 if st.button("▶️ Run Simulation", type="primary"):
-                    eng = ZISFlowEngine(normalize_zis_keys(current_def), json.loads(inp), {}, {})
-                    logs, ctx, path = eng.run()
-                    st.session_state["debug_res"] = (logs, ctx, path)
+                    # [FIX] Safe JSON decode
+                    try:
+                        input_json = json.loads(inp)
+                        eng = ZISFlowEngine(normalize_zis_keys(current_def), input_json, {}, {})
+                        logs, ctx, path = eng.run()
+                        st.session_state["debug_res"] = (logs, ctx, path)
+                    except json.JSONDecodeError:
+                        st.error("Invalid JSON input for simulation.")
+                    except Exception as e:
+                        st.error(f"Simulation Error: {e}")
+
                 st.divider()
                 if "debug_res" in st.session_state:
                     logs, ctx, path = st.session_state["debug_res"]
