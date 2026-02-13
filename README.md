@@ -1,3 +1,3 @@
 # ZIS Studio
 
-Helps to create, test and deploy ZIS workflows in Zendesk Plataform.
+Helps create, test, and deploy ZIS workflows on the Zendesk platform.
