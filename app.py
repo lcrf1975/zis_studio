@@ -376,7 +376,7 @@ if "cached_svg" not in st.session_state:
 if "cached_svg_hash" not in st.session_state:
     st.session_state["cached_svg_hash"] = ""
 
-for key in ["zd_subdomain", "zd_email", "zd_token"]:
+for key in ["zd_subdomain", "zd_email", "zd_token", "zis_oauth_token"]:
     if key not in st.session_state:
         st.session_state[key] = ""
 
@@ -415,6 +415,33 @@ def get_configs_url(integration):
         if sub
         else ""
     )
+
+
+def get_configs_headers():
+    """Return auth headers for the Configs API (requires OAuth token, not API token)."""
+    token = st.session_state.get("zis_oauth_token", "")
+    if token:
+        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    return {"Content-Type": "application/json"}
+
+
+def detect_config_scopes():
+    """Scan all ZIS::Flow resources and return unique LoadConfig scope values."""
+    scopes = []
+    for res in st.session_state.get("bundle_resources", {}).values():
+        if get_zis_key(res, "type", "") != "ZIS::Flow":
+            continue
+        definition = res.get("properties", {}).get("definition", {})
+        states = definition.get("States", {})
+        for state in states.values():
+            action = get_zis_key(state, "ActionName", "") or state.get("ActionName", "")
+            if "LoadConfig" in action:
+                scope = state.get("Parameters", {}).get("scope") or state.get(
+                    "parameters", {}
+                ).get("scope")
+                if scope and scope not in scopes:
+                    scopes.append(scope)
+    return scopes
 
 
 def test_connection():
@@ -839,6 +866,12 @@ with t_set:
             st.text_input("Subdomain", key="zd_subdomain")
             st.text_input("Email", key="zd_email")
             st.text_input("API Token", key="zd_token", type="password")
+            st.text_input(
+                "ZIS OAuth Token",
+                key="zis_oauth_token",
+                type="password",
+                help="Required for the Configs API. API tokens are not supported there.",
+            )
             if st.button("Test Connection"):
                 ok, msg = test_connection()
                 if ok:
@@ -1011,7 +1044,7 @@ with t_imp:
                                     cfg_resp = requests.get(
                                         get_configs_url(it["int"]),
                                         params={"filter[scope]": "*"},
-                                        auth=get_auth(),
+                                        headers=get_configs_headers(),
                                         timeout=10,
                                     )
                                     if cfg_resp.status_code == 200:
@@ -1064,6 +1097,17 @@ with t_code:
             st.session_state["cfg_editor_key"] += 1
         st.session_state["_prev_code_edit_mode"] = "Integration Configs"
 
+        # Auto-detect scopes from loaded flows
+        detected_scopes = detect_config_scopes()
+        if detected_scopes:
+            st.caption(f"Scopes detected in flows: `{'`, `'.join(detected_scopes)}`")
+
+        if not st.session_state.get("zis_oauth_token"):
+            st.warning(
+                "The Configs API requires a **ZIS OAuth Token** — add it in the Settings tab. "
+                "API tokens are not supported."
+            )
+
         # Fetch shortcut
         int_name_for_fetch = st.session_state.get("current_integration_name", "")
         fc1, fc2 = st.columns([3, 1])
@@ -1082,7 +1126,7 @@ with t_code:
                         r = requests.get(
                             get_configs_url(int_name_for_fetch),
                             params={"filter[scope]": "*"},
-                            auth=get_auth(),
+                            headers=get_configs_headers(),
                             timeout=10,
                         )
                         if r.status_code == 200:
@@ -1610,22 +1654,18 @@ with t_dep:
                                 try:
                                     cr = requests.put(
                                         f"{get_configs_url(target_int)}/account",
-                                        auth=get_auth(),
                                         json={"config": configs_to_push},
-                                        headers={"Content-Type": "application/json"},
+                                        headers=get_configs_headers(),
                                         timeout=10,
                                     )
                                     if cr.status_code == 404:
                                         requests.post(
                                             get_configs_url(target_int),
-                                            auth=get_auth(),
                                             json={
                                                 "scope": "account",
                                                 "config": configs_to_push,
                                             },
-                                            headers={
-                                                "Content-Type": "application/json"
-                                            },
+                                            headers=get_configs_headers(),
                                             timeout=10,
                                         )
                                 except Exception:
@@ -1647,6 +1687,12 @@ with t_cfg:
         "Configs are key-value pairs stored per integration, accessible in flows as `$.config.{key}`"
     )
 
+    if not st.session_state.get("zis_oauth_token"):
+        st.warning(
+            "The Configs API requires a **ZIS OAuth Token** — add it in the Settings tab. "
+            "API tokens are not supported."
+        )
+
     if not st.session_state.get("is_connected"):
         st.warning("Connect in Settings first.")
     else:
@@ -1665,7 +1711,7 @@ with t_cfg:
                         r = requests.get(
                             get_configs_url(int_name_cfg),
                             params={"filter[scope]": "*"},
-                            auth=get_auth(),
+                            headers=get_configs_headers(),
                             timeout=10,
                         )
                         if r.status_code == 200:
@@ -1696,17 +1742,15 @@ with t_cfg:
                             # Try PUT (update), fall back to POST (create) on 404
                             r = requests.put(
                                 f"{get_configs_url(int_name_cfg)}/account",
-                                auth=get_auth(),
                                 json={"config": configs},
-                                headers={"Content-Type": "application/json"},
+                                headers=get_configs_headers(),
                                 timeout=10,
                             )
                             if r.status_code == 404:
                                 r = requests.post(
                                     get_configs_url(int_name_cfg),
-                                    auth=get_auth(),
                                     json={"scope": "account", "config": configs},
-                                    headers={"Content-Type": "application/json"},
+                                    headers=get_configs_headers(),
                                     timeout=10,
                                 )
                             if r.status_code in [200, 201]:
