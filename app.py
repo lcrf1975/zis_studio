@@ -865,7 +865,7 @@ with t_set:
             st.text_input("Email", key="zd_email")
             st.text_input("API Token", key="zd_token", type="password")
             st.divider()
-            st.caption("Optional — only needed for the Configs tab")
+            st.caption("Optional: Required to read/update ZIS:Config")
             st.text_input(
                 "ZIS OAuth Token",
                 key="zis_oauth_token",
@@ -875,13 +875,29 @@ with t_set:
                     "The standard API Token cannot be used for that endpoint."
                 ),
             )
-            if st.button("Test Connection"):
+            if st.button("Only Connect"):
                 ok, msg = test_connection()
                 if ok:
                     st.session_state["is_connected"] = True
-                    st.toast(msg, icon="✅")
+                    st.toast(f"API Token: {msg}", icon="✅")
                 else:
-                    st.toast(msg, icon="❌")
+                    st.toast(f"API Token: {msg}", icon="❌")
+
+                oauth_token = st.session_state.get("zis_oauth_token", "")
+                if oauth_token:
+                    try:
+                        sub = st.session_state.zd_subdomain
+                        r = requests.get(
+                            f"https://{sub}.zendesk.com/api/v2/users/me.json",
+                            headers={"Authorization": f"Bearer {oauth_token}"},
+                            timeout=10,
+                        )
+                        if r.status_code == 200:
+                            st.toast("OAuth Token: Active", icon="✅")
+                        else:
+                            st.toast(f"OAuth Token: Error {r.status_code}", icon="❌")
+                    except Exception as e:
+                        st.toast(f"OAuth Token: {e}", icon="❌")
     with c2:
         if st.session_state.get("is_connected"):
             st.success(f"✅ Connected to: **{st.session_state.zd_subdomain}**")
