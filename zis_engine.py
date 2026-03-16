@@ -1,11 +1,11 @@
 import time
 import requests
 import re
-import copy
 import json
 import fnmatch
 from datetime import datetime
 from jsonpath_ng import parse
+
 
 class ZISActionTester:
     """
@@ -14,19 +14,20 @@ class ZISActionTester:
     """
     @staticmethod
     def execute(action_def, params_input):
-        engine = ZISFlowEngine({}, {}, {}, {}) # Dummy engine for utility methods
-        
+        engine = ZISFlowEngine({}, {}, {}, {})  # Dummy engine for utility methods
+
         # Mock a state definition compatible with run_action
         mock_state_def = {
             "ActionName": "TestRunner",
             "Parameters": params_input
         }
-        
+
         # Merge action definition props (url, method) with user input params
         combined_params = {**action_def, **params_input}
         mock_state_def["Parameters"] = combined_params
 
         return engine.run_action("TEST_ACTION", mock_state_def)
+
 
 class ZISFlowEngine:
     def __init__(self, flow_definition, input_data, connections, configs):
@@ -51,12 +52,12 @@ class ZISFlowEngine:
             return path
         try:
             # Handle root reference
-            if path == "$": return data
-            
+            if path == "$":
+                return data
             jsonpath_expr = parse(path.replace("$.", ""))
             matches = jsonpath_expr.find(data)
             return matches[0].value if matches else None
-        except Exception as e:
+        except Exception:
             return None
 
     def set_nested_value(self, path, value):
@@ -81,7 +82,8 @@ class ZISFlowEngine:
 
     def interpolate(self, text):
         """Replaces {{$.value}} with actual data"""
-        if not isinstance(text, str): return text
+        if not isinstance(text, str):
+            return text
         placeholders = re.findall(r'\{\{(.*?)\}\}', text)
         for ph in placeholders:
             val = self.resolve_path(ph, self.context)
@@ -92,17 +94,19 @@ class ZISFlowEngine:
         """Handles InputPath and OutputPath filtering"""
         path_key = "InputPath" if is_input else "OutputPath"
         path = state.get(path_key)
-        
-        if path is None: return current_data
-        if path == "$": return current_data
-            
+
+        if path is None:
+            return current_data
+        if path == "$":
+            return current_data
+
         return self.resolve_path(path, current_data)
 
     def run_action(self, state_name, state_def):
         """Simulates the 'Action' state (HTTP Requests)"""
         action_name = state_def.get("ActionName", "Unknown Action")
         params = state_def.get("Parameters", {})
-        
+
         resolved_params = {}
         for k, v in params.items():
             key = k[:-2] if k.endswith(".$") else k
@@ -113,14 +117,16 @@ class ZISFlowEngine:
             resolved_params[key] = val
 
         self.log(state_name, f"Executing Action: {action_name}", "RUNNING")
-        
+
         url = resolved_params.get("url", "")
         method = resolved_params.get("method", "GET")
         payload = resolved_params.get("body") or resolved_params.get("requestBody")
-        
+
         if isinstance(payload, str):
-            try: payload = json.loads(payload)
-            except: pass
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                pass
 
         if url:
             try:
@@ -135,16 +141,18 @@ class ZISFlowEngine:
 
                 response = requests.request(method, url, json=payload, headers=req_headers)
                 status_msg = f"API Hit: {url} [{response.status_code}]"
-                
-                try: resp_json = response.json()
-                except: resp_json = {"raw_text": response.text}
+
+                try:
+                    resp_json = response.json()
+                except Exception:
+                    resp_json = {"raw_text": response.text}
 
                 if response.status_code >= 400:
                     self.log(state_name, status_msg, "ERROR")
                     self.log(state_name, f"Resp: {str(resp_json)[:100]}...", "ERROR")
                 else:
                     self.log(state_name, status_msg, "SUCCESS")
-                    
+
                 return resp_json
             except Exception as e:
                 self.log(state_name, f"Request failed: {str(e)}", "ERROR")
@@ -152,12 +160,11 @@ class ZISFlowEngine:
         else:
             self.log(state_name, "No URL found. Simulating success (Mock Mode)", "WARNING")
             return {
-                "mock_response": "Success", 
+                "mock_response": "Success",
                 "message": f"Simulated execution of {action_name}",
                 "input_params": resolved_params
             }
 
-    # [NEW] Recursive Rule Evaluator
     def evaluate_rule(self, rule, context):
         """
         Recursively evaluates ASL Choice rules including Logic (And/Or/Not)
@@ -173,21 +180,23 @@ class ZISFlowEngine:
 
         # 2. Resolve Variable (Required for comparisons)
         var_path = rule.get("Variable")
-        if not var_path: return False
-            
+        if not var_path:
+            return False
+
         val = self.resolve_path(var_path, context)
 
         # 3. Existence Checks
         if "IsPresent" in rule:
             exists = val is not None
-            # Handle string "true"/"false" if passed from basic UI
             target = rule["IsPresent"]
-            if isinstance(target, str): target = target.lower() == "true"
+            if isinstance(target, str):
+                target = target.lower() == "true"
             return exists if target else not exists
         if "IsNull" in rule:
             is_null = val is None
             target = rule["IsNull"]
-            if isinstance(target, str): target = target.lower() == "true"
+            if isinstance(target, str):
+                target = target.lower() == "true"
             return is_null if target else not is_null
 
         # 4. String Comparisons
@@ -207,8 +216,10 @@ class ZISFlowEngine:
 
         # 5. Numeric Comparisons
         def safe_float(v):
-            try: return float(v)
-            except: return None
+            try:
+                return float(v)
+            except Exception:
+                return None
 
         num_val = safe_float(val)
         if num_val is not None:
@@ -226,13 +237,16 @@ class ZISFlowEngine:
         # 6. Boolean Comparisons
         if "BooleanEquals" in rule:
             target = rule["BooleanEquals"]
-            if isinstance(target, str): target = target.lower() == "true"
+            if isinstance(target, str):
+                target = target.lower() == "true"
             return bool(val) == bool(target)
 
         # 7. Timestamp Comparisons
         def safe_date(d):
-            try: return datetime.fromisoformat(str(d).replace('Z', '+00:00'))
-            except: return None
+            try:
+                return datetime.fromisoformat(str(d).replace('Z', '+00:00'))
+            except Exception:
+                return None
 
         dt_val = safe_date(val)
         if dt_val is not None:
@@ -253,24 +267,24 @@ class ZISFlowEngine:
         flow_def = self.flow.get("definition", self.flow)
         current_state_name = flow_def.get("StartAt")
         states = flow_def.get("States", {})
-        
+
         self.log("START", f"Starting Flow: {self.context.get('flow_name', 'Local')}")
 
         steps_run = 0
-        MAX_STEPS = 50 
+        MAX_STEPS = 50
 
         while current_state_name and steps_run < MAX_STEPS:
             steps_run += 1
             self.visited_states.append(current_state_name)
-            
+
             state = states.get(current_state_name)
             if not state:
                 self.log("ERROR", f"State {current_state_name} not found", "FAIL")
                 break
-            
+
             state_type = state.get("Type")
             result = None
-            
+
             if state_type == "Action":
                 result = self.run_action(current_state_name, state)
                 if "ResultPath" in state:
@@ -281,9 +295,8 @@ class ZISFlowEngine:
                 choices = state.get("Choices", [])
                 next_state = state.get("Default")
                 matched = False
-                
+
                 for rule in choices:
-                    # [UPDATED] Use recursive evaluator
                     if self.evaluate_rule(rule, self.context):
                         matched = True
                         next_state = rule.get("Next")
@@ -315,12 +328,12 @@ class ZISFlowEngine:
                 error = state.get("Error", "FailState")
                 self.log(current_state_name, f"Flow Failed: {error}", "FAIL")
                 break
-            
+
             if state.get("End"):
                 self.log(current_state_name, "End of Flow reached")
                 break
-        
+
         if steps_run >= MAX_STEPS:
             self.log("SYSTEM", "Max steps reached (Loop detection)", "WARNING")
-            
+
         return self.logs, self.context, self.visited_states
