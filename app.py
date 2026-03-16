@@ -333,6 +333,8 @@ if "current_integration_name" not in st.session_state:
     st.session_state["current_integration_name"] = ""
 if "code_edit_mode" not in st.session_state:
     st.session_state["code_edit_mode"] = "Bundle Resource"
+if "cfg_editor_key" not in st.session_state:
+    st.session_state["cfg_editor_key"] = 0
 
 
 # ==========================================
@@ -876,6 +878,7 @@ with t_imp:
                                         configs_list = cfg_resp.json().get("configs", [])
                                         st.session_state["zis_configs"] = {
                                             c["key"]: c["value"] for c in configs_list}
+                                        st.session_state["cfg_editor_key"] += 1
                                         if configs_list:
                                             st.toast(f"Loaded {len(configs_list)} config(s)", icon="🔧")
                                 except Exception:
@@ -904,11 +907,11 @@ with t_code:
     st.divider()
 
     if edit_mode == "Integration Configs":
-        st.caption("Editing Integration Configs as JSON — changes are saved locally and can be pushed to Zendesk from the Configs tab.")
+        st.caption("Editing Integration Configs as JSON — save locally here, then push to Zendesk from the Configs tab.")
 
         # Load configs JSON into editor when switching to this mode
         configs_content = json.dumps(st.session_state.get("zis_configs", {}), indent=2)
-        cfg_editor_key = f"cfg_editor_{st.session_state['editor_key']}"
+        cfg_editor_key = f"cfg_editor_{st.session_state['cfg_editor_key']}"
 
         if HAS_EDITOR:
             custom_buttons = [{"name": "Save",
@@ -1385,6 +1388,7 @@ with t_cfg:
                             st.session_state["zis_configs"] = {
                                 c["key"]: c["value"] for c in configs_list}
                             st.session_state["current_integration_name"] = int_name_cfg
+                            st.session_state["cfg_editor_key"] += 1
                             st.toast(f"Fetched {len(configs_list)} config(s)", icon="✅")
                             force_refresh()
                         else:
