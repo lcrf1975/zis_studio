@@ -864,11 +864,16 @@ with t_set:
             st.text_input("Subdomain", key="zd_subdomain")
             st.text_input("Email", key="zd_email")
             st.text_input("API Token", key="zd_token", type="password")
+            st.divider()
+            st.caption("Optional — only needed for the Configs tab")
             st.text_input(
                 "ZIS OAuth Token",
                 key="zis_oauth_token",
                 type="password",
-                help="Required for the Configs API. API tokens are not supported there.",
+                help=(
+                    "Only required to fetch or push Integration Configs. "
+                    "The standard API Token cannot be used for that endpoint."
+                ),
             )
             if st.button("Test Connection"):
                 ok, msg = test_connection()
@@ -1100,9 +1105,9 @@ with t_code:
             st.caption(f"Scopes detected in flows: `{'`, `'.join(detected_scopes)}`")
 
         if not st.session_state.get("zis_oauth_token"):
-            st.warning(
-                "The Configs API requires a **ZIS OAuth Token** — add it in the Settings tab. "
-                "API tokens are not supported."
+            st.caption(
+                "ℹ️ To fetch or push configs, add a **ZIS OAuth Token** in Settings "
+                "(the API Token is not accepted by the Configs endpoint)."
             )
 
         # Fetch shortcut
@@ -1685,9 +1690,9 @@ with t_cfg:
     )
 
     if not st.session_state.get("zis_oauth_token"):
-        st.warning(
-            "The Configs API requires a **ZIS OAuth Token** — add it in the Settings tab. "
-            "API tokens are not supported."
+        st.caption(
+            "ℹ️ A **ZIS OAuth Token** is required to fetch or push configs — "
+            "add it in Settings. The standard API Token is not accepted here."
         )
 
     if not st.session_state.get("is_connected"):
