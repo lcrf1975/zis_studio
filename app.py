@@ -447,8 +447,7 @@ def detect_config_scopes():
 def test_connection():
     try:
         r = requests.get(
-            f"https://{
-                st.session_state.zd_subdomain}.zendesk.com/api/v2/users/me.json",
+            f"https://{st.session_state.zd_subdomain}.zendesk.com/api/v2/users/me.json",
             auth=get_auth(),
             timeout=10,
         )
@@ -938,8 +937,7 @@ with t_imp:
                                 pass
                         st.session_state["scan_results"] = res
                         status.update(
-                            label=f"Found {
-                                len(res)} bundles.",
+                            label=f"Found {len(res)} bundles.",
                             state="complete",
                             expanded=False,
                         )
@@ -1633,12 +1631,10 @@ with t_dep:
                         }
 
                         status.write(
-                            f"Uploading {
-                                len(resources_payload)} resources..."
+                            f"Uploading {len(resources_payload)} resources..."
                         )
                         r = requests.post(
-                            f"{
-                                get_base_url()}/{target_int}/bundles",
+                            f"{get_base_url()}/{target_int}/bundles",
                             auth=get_auth(),
                             json=payload,
                             headers={"Content-Type": "application/json"},
