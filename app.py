@@ -331,6 +331,8 @@ if "zis_configs" not in st.session_state:
     st.session_state["zis_configs"] = {}
 if "current_integration_name" not in st.session_state:
     st.session_state["current_integration_name"] = ""
+if "code_edit_mode" not in st.session_state:
+    st.session_state["code_edit_mode"] = "Bundle Resource"
 
 
 # ==========================================
@@ -890,56 +892,99 @@ with t_imp:
                         st.error(f"Network error: {e}")
 
 with t_code:
-    render_resource_manager("code_tab", "res_selection_code")
+    edit_mode = st.radio(
+        "Editing",
+        ["Bundle Resource", "Integration Configs"],
+        index=0 if st.session_state["code_edit_mode"] == "Bundle Resource" else 1,
+        horizontal=True,
+        key="code_edit_mode_radio",
+        label_visibility="collapsed")
+    st.session_state["code_edit_mode"] = edit_mode
+
     st.divider()
 
-    target_key = st.session_state.get("res_selection_code")
+    if edit_mode == "Integration Configs":
+        st.caption("Editing Integration Configs as JSON — changes are saved locally and can be pushed to Zendesk from the Configs tab.")
 
-    if target_key and st.session_state.get("editor_content") == "":
-        res_obj = st.session_state["bundle_resources"].get(target_key)
-        if res_obj:
-            curr_def = res_obj.get("properties", {}).get("definition", {})
-            content = json.dumps(curr_def, indent=2)
-            st.session_state["editor_content"] = content
-            st.session_state["editor_key"] += 1
+        # Load configs JSON into editor when switching to this mode
+        configs_content = json.dumps(st.session_state.get("zis_configs", {}), indent=2)
+        cfg_editor_key = f"cfg_editor_{st.session_state['editor_key']}"
 
-    dk = f"code_editor_{st.session_state['editor_key']}"
-    if HAS_EDITOR:
-        custom_buttons = [{"name": "Save",
-                           "feather": "Save",
-                           "primary": True,
-                           "hasText": True,
-                           "alwaysOn": True,
-                           "commands": ["submit"],
-                           "style": {"top": "0.46rem",
-                                     "right": "0.4rem"}}]
+        if HAS_EDITOR:
+            custom_buttons = [{"name": "Save",
+                               "feather": "Save",
+                               "primary": True,
+                               "hasText": True,
+                               "alwaysOn": True,
+                               "commands": ["submit"],
+                               "style": {"top": "0.46rem",
+                                         "right": "0.4rem"}}]
 
-        resp = code_editor(
-            st.session_state.get(
-                "editor_content",
-                ""),
-            lang="json",
-            height=600,
-            key=dk,
-            buttons=custom_buttons,
-            options={
-                "showLineNumbers": True,
-                "wrap": True,
-                "autoClosingBrackets": True})
+            cfg_resp = code_editor(
+                configs_content,
+                lang="json",
+                height=600,
+                key=cfg_editor_key,
+                buttons=custom_buttons,
+                options={"showLineNumbers": True, "wrap": True, "autoClosingBrackets": True})
 
-        if resp and resp.get("text") and resp.get("type") != "submit":
-            st.session_state["editor_content"] = resp["text"]
+            if cfg_resp and cfg_resp.get("type") == "submit":
+                try:
+                    parsed = json.loads(clean_json_string(cfg_resp.get("text", "{}")))
+                    if isinstance(parsed, dict):
+                        st.session_state["zis_configs"] = parsed
+                        st.toast("Configs saved!", icon="✅")
+                    else:
+                        st.error("❌ Configs must be a JSON object (key-value pairs).")
+                except json.JSONDecodeError as e:
+                    st.error(f"❌ JSON Error at line {e.lineno}: {e.msg}")
 
-        if resp and resp.get("type") == "submit":
-            current_text = resp.get("text", "")
-            st.session_state["editor_content"] = current_text
-            target_key = st.session_state.get("res_selection_code")
-            ok, err = try_sync_from_editor(
-                target_key, new_content=current_text, force_ui_update=False)
-            if ok:
-                st.toast("Saved Successfully!", icon="✅")
-            else:
-                st.error(f"❌ Syntax Error: {err}")
+    else:
+        render_resource_manager("code_tab", "res_selection_code")
+        st.divider()
+
+        target_key = st.session_state.get("res_selection_code")
+
+        if target_key and st.session_state.get("editor_content") == "":
+            res_obj = st.session_state["bundle_resources"].get(target_key)
+            if res_obj:
+                curr_def = res_obj.get("properties", {}).get("definition", {})
+                content = json.dumps(curr_def, indent=2)
+                st.session_state["editor_content"] = content
+                st.session_state["editor_key"] += 1
+
+        dk = f"code_editor_{st.session_state['editor_key']}"
+        if HAS_EDITOR:
+            custom_buttons = [{"name": "Save",
+                               "feather": "Save",
+                               "primary": True,
+                               "hasText": True,
+                               "alwaysOn": True,
+                               "commands": ["submit"],
+                               "style": {"top": "0.46rem",
+                                         "right": "0.4rem"}}]
+
+            resp = code_editor(
+                st.session_state.get("editor_content", ""),
+                lang="json",
+                height=600,
+                key=dk,
+                buttons=custom_buttons,
+                options={"showLineNumbers": True, "wrap": True, "autoClosingBrackets": True})
+
+            if resp and resp.get("text") and resp.get("type") != "submit":
+                st.session_state["editor_content"] = resp["text"]
+
+            if resp and resp.get("type") == "submit":
+                current_text = resp.get("text", "")
+                st.session_state["editor_content"] = current_text
+                target_key = st.session_state.get("res_selection_code")
+                ok, err = try_sync_from_editor(
+                    target_key, new_content=current_text, force_ui_update=False)
+                if ok:
+                    st.toast("Saved Successfully!", icon="✅")
+                else:
+                    st.error(f"❌ Syntax Error: {err}")
 
 with t_vis:
     render_resource_manager("vis_tab", "res_selection_vis")
