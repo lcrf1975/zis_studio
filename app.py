@@ -457,8 +457,7 @@ def test_connection():
             if r.status_code == 200
             else (
                 False,
-                f"Error {
-                r.status_code}",
+                f"Error {r.status_code}",
             )
         )
     except Exception as e:
@@ -1131,16 +1130,18 @@ with t_code:
                         )
                         if r.status_code == 200:
                             configs_list = r.json().get("configs", [])
-                            merged = {}
+                            configs_by_scope = {}
                             for c in configs_list:
-                                merged.update(c.get("config", {}))
-                            st.session_state["zis_configs"] = merged
+                                configs_by_scope[c.get("scope", "unknown")] = (
+                                    c.get("config", {})
+                                )
+                            st.session_state["zis_configs"] = configs_by_scope
                             st.session_state["current_integration_name"] = (
                                 int_name_for_fetch
                             )
                             st.session_state["cfg_editor_key"] += 1
                             st.toast(
-                                f"Fetched {len(configs_list)} config(s)", icon="✅"
+                                f"Fetched {len(configs_list)} scope(s)", icon="✅"
                             )
                             st.rerun()
                         else:
@@ -1716,14 +1717,16 @@ with t_cfg:
                         )
                         if r.status_code == 200:
                             configs_list = r.json().get("configs", [])
-                            merged = {}
+                            configs_by_scope = {}
                             for c in configs_list:
-                                merged.update(c.get("config", {}))
-                            st.session_state["zis_configs"] = merged
+                                configs_by_scope[c.get("scope", "unknown")] = (
+                                    c.get("config", {})
+                                )
+                            st.session_state["zis_configs"] = configs_by_scope
                             st.session_state["current_integration_name"] = int_name_cfg
                             st.session_state["cfg_editor_key"] += 1
                             st.toast(
-                                f"Fetched {len(configs_list)} config(s)", icon="✅"
+                                f"Fetched {len(configs_list)} scope(s)", icon="✅"
                             )
                             force_refresh()
                         else:
@@ -1739,24 +1742,32 @@ with t_cfg:
                     configs = st.session_state.get("zis_configs", {})
                     if configs:
                         try:
-                            # Try PUT (update), fall back to POST (create) on 404
-                            r = requests.put(
-                                f"{get_configs_url(int_name_cfg)}/account",
-                                json={"config": configs},
-                                headers=get_configs_headers(),
-                                timeout=10,
-                            )
-                            if r.status_code == 404:
-                                r = requests.post(
-                                    get_configs_url(int_name_cfg),
-                                    json={"scope": "account", "config": configs},
+                            push_errors = []
+                            push_ok = 0
+                            for scope, scope_cfg in configs.items():
+                                r = requests.put(
+                                    f"{get_configs_url(int_name_cfg)}/{scope}",
+                                    json={"config": scope_cfg},
                                     headers=get_configs_headers(),
                                     timeout=10,
                                 )
-                            if r.status_code in [200, 201]:
-                                st.toast(f"Pushed {len(configs)} config(s)", icon="✅")
+                                if r.status_code == 404:
+                                    r = requests.post(
+                                        get_configs_url(int_name_cfg),
+                                        json={"scope": scope, "config": scope_cfg},
+                                        headers=get_configs_headers(),
+                                        timeout=10,
+                                    )
+                                if r.status_code in [200, 201]:
+                                    push_ok += 1
+                                else:
+                                    push_errors.append(
+                                        f"`{scope}`: {r.status_code} - {r.text}"
+                                    )
+                            if push_errors:
+                                st.error("\n\n".join(push_errors))
                             else:
-                                st.error(f"Failed to push: {r.status_code} - {r.text}")
+                                st.toast(f"Pushed {push_ok} scope(s)", icon="✅")
                         except Exception as e:
                             st.error(str(e))
                     else:
@@ -1764,39 +1775,63 @@ with t_cfg:
                 else:
                     st.warning("Enter an integration name.")
 
+        # Auto-detect scopes from loaded flows
+        detected_scopes = detect_config_scopes()
+        if detected_scopes:
+            st.caption(
+                "Scopes detected in flows: "
+                + "  ".join(f"`{s}`" for s in detected_scopes)
+            )
+
         st.divider()
 
         configs = st.session_state.get("zis_configs", {})
         if configs:
             st.markdown("**Stored Configs**")
-            for cfg_key in list(configs.keys()):
-                c1, c2, c3 = st.columns([2, 4, 1])
-                with c1:
-                    st.text_input(
-                        "Key",
-                        value=cfg_key,
-                        disabled=True,
-                        key=f"cfg_k_{cfg_key}",
-                        label_visibility="collapsed",
-                    )
-                with c2:
-                    new_val = st.text_input(
-                        "Value",
-                        value=str(configs[cfg_key]),
-                        key=f"cfg_v_{cfg_key}",
-                        label_visibility="collapsed",
-                    )
-                    if new_val != str(configs[cfg_key]):
-                        st.session_state["zis_configs"][cfg_key] = new_val
-                with c3:
-                    if st.button("🗑️", key=f"cfg_del_{cfg_key}"):
-                        del st.session_state["zis_configs"][cfg_key]
-                        force_refresh()
+            for scope, scope_cfg in list(configs.items()):
+                with st.expander(f"scope: `{scope}`", expanded=True):
+                    for cfg_key in list(scope_cfg.keys()):
+                        c1, c2, c3 = st.columns([2, 4, 1])
+                        with c1:
+                            st.text_input(
+                                "Key",
+                                value=cfg_key,
+                                disabled=True,
+                                key=f"cfg_k_{scope}_{cfg_key}",
+                                label_visibility="collapsed",
+                            )
+                        with c2:
+                            new_val = st.text_input(
+                                "Value",
+                                value=str(scope_cfg[cfg_key]),
+                                key=f"cfg_v_{scope}_{cfg_key}",
+                                label_visibility="collapsed",
+                            )
+                            if new_val != str(scope_cfg[cfg_key]):
+                                st.session_state["zis_configs"][scope][cfg_key] = (
+                                    new_val
+                                )
+                        with c3:
+                            if st.button("🗑️", key=f"cfg_del_{scope}_{cfg_key}"):
+                                del st.session_state["zis_configs"][scope][cfg_key]
+                                force_refresh()
         else:
             st.info("No configs loaded. Fetch from Zendesk or add one below.")
 
-        with st.expander("➕ Add Config"):
-            nc1, nc2, nc3 = st.columns([2, 4, 1])
+        with st.expander("➕ Add Config Entry"):
+            if detected_scopes:
+                st.caption(
+                    "Detected scopes: "
+                    + "  ".join(f"`{s}`" for s in detected_scopes)
+                )
+            nc0, nc1, nc2, nc3 = st.columns([2, 2, 3, 1])
+            with nc0:
+                new_cfg_scope = st.text_input(
+                    "Scope",
+                    key="new_cfg_scope",
+                    label_visibility="collapsed",
+                    placeholder="scope",
+                )
             with nc1:
                 new_cfg_key = st.text_input(
                     "Key",
@@ -1813,16 +1848,17 @@ with t_cfg:
                 )
             with nc3:
                 if st.button("Add", key="btn_add_cfg"):
-                    if (
-                        new_cfg_key
-                        and new_cfg_key not in st.session_state["zis_configs"]
-                    ):
-                        st.session_state["zis_configs"][new_cfg_key] = new_cfg_val
+                    if new_cfg_scope and new_cfg_key:
+                        if new_cfg_scope not in st.session_state["zis_configs"]:
+                            st.session_state["zis_configs"][new_cfg_scope] = {}
+                        st.session_state["zis_configs"][new_cfg_scope][
+                            new_cfg_key
+                        ] = new_cfg_val
                         force_refresh()
-                    elif not new_cfg_key:
-                        st.error("Key is required.")
+                    elif not new_cfg_scope:
+                        st.error("Scope is required.")
                     else:
-                        st.error("Key already exists.")
+                        st.error("Key is required.")
 
 with t_deb:
     render_resource_manager("deb_tab", "res_selection_deb", allowed_types=["ZIS::Flow"])
