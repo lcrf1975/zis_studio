@@ -875,7 +875,7 @@ with t_set:
                     "The standard API Token cannot be used for that endpoint."
                 ),
             )
-            if st.button("Only Connect"):
+            if st.button("Connect"):
                 ok, msg = test_connection()
                 if ok:
                     st.session_state["is_connected"] = True
