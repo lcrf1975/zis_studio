@@ -1151,17 +1151,15 @@ with t_code:
                             configs_list = r.json().get("configs", [])
                             configs_by_scope = {}
                             for c in configs_list:
-                                configs_by_scope[c.get("scope", "unknown")] = (
-                                    c.get("config", {})
+                                configs_by_scope[c.get("scope", "unknown")] = c.get(
+                                    "config", {}
                                 )
                             st.session_state["zis_configs"] = configs_by_scope
                             st.session_state["current_integration_name"] = (
                                 int_name_for_fetch
                             )
                             st.session_state["cfg_editor_key"] += 1
-                            st.toast(
-                                f"Fetched {len(configs_list)} scope(s)", icon="✅"
-                            )
+                            st.toast(f"Fetched {len(configs_list)} scope(s)", icon="✅")
                             st.rerun()
                         else:
                             st.error(f"API Error {r.status_code}: {r.text}")
@@ -1651,9 +1649,7 @@ with t_dep:
                             "resources": resources_payload,
                         }
 
-                        status.write(
-                            f"Uploading {len(resources_payload)} resources..."
-                        )
+                        status.write(f"Uploading {len(resources_payload)} resources...")
                         r = requests.post(
                             f"{get_base_url()}/{target_int}/bundles",
                             auth=get_auth(),
@@ -1705,9 +1701,8 @@ with t_cfg:
         "Configs are key-value pairs stored per integration, accessible in flows as `$.config.{key}`"
     )
 
-    _cfg_ready = (
-        st.session_state.get("is_connected")
-        and bool(st.session_state.get("zis_oauth_token"))
+    _cfg_ready = st.session_state.get("is_connected") and bool(
+        st.session_state.get("zis_oauth_token")
     )
     if not st.session_state.get("zis_oauth_token"):
         st.caption(
@@ -1741,15 +1736,13 @@ with t_cfg:
                         configs_list = r.json().get("configs", [])
                         configs_by_scope = {}
                         for c in configs_list:
-                            configs_by_scope[c.get("scope", "unknown")] = (
-                                c.get("config", {})
+                            configs_by_scope[c.get("scope", "unknown")] = c.get(
+                                "config", {}
                             )
                         st.session_state["zis_configs"] = configs_by_scope
                         st.session_state["current_integration_name"] = int_name_cfg
                         st.session_state["cfg_editor_key"] += 1
-                        st.toast(
-                            f"Fetched {len(configs_list)} scope(s)", icon="✅"
-                        )
+                        st.toast(f"Fetched {len(configs_list)} scope(s)", icon="✅")
                         force_refresh()
                     else:
                         st.error(f"API Error: {r.status_code} - {r.text}")
@@ -1806,8 +1799,7 @@ with t_cfg:
     detected_scopes = detect_config_scopes()
     if detected_scopes:
         st.caption(
-            "Scopes detected in flows: "
-            + "  ".join(f"`{s}`" for s in detected_scopes)
+            "Scopes detected in flows: " + "  ".join(f"`{s}`" for s in detected_scopes)
         )
 
     st.divider()
@@ -1835,9 +1827,7 @@ with t_cfg:
                             label_visibility="collapsed",
                         )
                         if new_val != str(scope_cfg[cfg_key]):
-                            st.session_state["zis_configs"][scope][cfg_key] = (
-                                new_val
-                            )
+                            st.session_state["zis_configs"][scope][cfg_key] = new_val
                     with c3:
                         if st.button("🗑️", key=f"cfg_del_{scope}_{cfg_key}"):
                             del st.session_state["zis_configs"][scope][cfg_key]
@@ -1888,17 +1878,17 @@ with t_cfg:
             )
         with nc3:
             if st.button("Add", key="btn_add_cfg"):
-                    if new_cfg_scope and new_cfg_key:
-                        if new_cfg_scope not in st.session_state["zis_configs"]:
-                            st.session_state["zis_configs"][new_cfg_scope] = {}
-                        st.session_state["zis_configs"][new_cfg_scope][
-                            new_cfg_key
-                        ] = new_cfg_val
-                        force_refresh()
-                    elif not new_cfg_scope:
-                        st.error("Scope is required.")
-                    else:
-                        st.error("Key is required.")
+                if new_cfg_scope and new_cfg_key:
+                    if new_cfg_scope not in st.session_state["zis_configs"]:
+                        st.session_state["zis_configs"][new_cfg_scope] = {}
+                    st.session_state["zis_configs"][new_cfg_scope][
+                        new_cfg_key
+                    ] = new_cfg_val
+                    force_refresh()
+                elif not new_cfg_scope:
+                    st.error("Scope is required.")
+                else:
+                    st.error("Key is required.")
 
 with t_deb:
     render_resource_manager("deb_tab", "res_selection_deb", allowed_types=["ZIS::Flow"])
