@@ -907,7 +907,9 @@ with t_code:
     st.divider()
 
     if edit_mode == "Integration Configs":
-        st.caption("Editing Integration Configs as JSON — save locally here, then push to Zendesk from the Configs tab.")
+        st.caption(
+            "Editing Integration Configs as JSON — save locally here, then push to Zendesk from the Configs tab."
+        )
 
         # Load configs JSON into editor when switching to this mode
         configs_content = json.dumps(st.session_state.get("zis_configs", {}), indent=2)
