@@ -1699,11 +1699,21 @@ with t_dep:
         st.caption(
             "Push locally stored configs to Zendesk. Requires a ZIS OAuth Token in Settings."
         )
-        _dep_cfg_int = st.text_input(
-            "Integration Name",
-            value=st.session_state.get("current_integration_name", ""),
-            key="dep_cfg_int",
-        )
+        _dep_cfg_int = st.session_state.get("current_integration_name", "")
+        if _dep_cfg_int:
+            st.caption(f"Integration: `{_dep_cfg_int}`")
+            _dep_scopes = detect_config_scopes()
+            if _dep_scopes:
+                st.caption(
+                    "Scopes detected in flows: "
+                    + "  ".join(f"`{s}`" for s in _dep_scopes)
+                )
+        else:
+            _dep_cfg_int = st.text_input(
+                "Integration Name",
+                key="dep_cfg_int",
+                placeholder="Integration name (e.g. my_integration)",
+            )
         if st.button("Push Configs to Zendesk", key="btn_dep_cfg_push"):
             _dep_ready = st.session_state.get("is_connected") and bool(
                 st.session_state.get("zis_oauth_token")
