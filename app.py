@@ -844,14 +844,13 @@ def render_resource_manager(location_key, selection_state_key, allowed_types=Non
 # ==========================================
 st.title("ZIS Studio")
 
-t_set, t_imp, t_code, t_vis, t_dep, t_cfg, t_deb = st.tabs(
+t_set, t_imp, t_code, t_vis, t_dep, t_deb = st.tabs(
     [
         "⚙️ Settings",
         "📥 Import",
         "📝 Code Editor",
         "🎨 Visual Designer",
         "🚀 Deploy",
-        "🔧 Configs",
         "🐞 Debugger",
     ]
 )
@@ -1619,25 +1618,26 @@ with t_dep:
                             configs_to_push = st.session_state.get("zis_configs", {})
                             if configs_to_push:
                                 status.write(
-                                    f"Pushing {len(configs_to_push)} config(s)..."
+                                    f"Pushing {len(configs_to_push)} config scope(s)..."
                                 )
                                 try:
-                                    cr = requests.put(
-                                        f"{get_configs_url(target_int)}/account",
-                                        json={"config": configs_to_push},
-                                        headers=get_configs_headers(),
-                                        timeout=10,
-                                    )
-                                    if cr.status_code == 404:
-                                        requests.post(
-                                            get_configs_url(target_int),
-                                            json={
-                                                "scope": "account",
-                                                "config": configs_to_push,
-                                            },
+                                    for cfg_scope, cfg_data in configs_to_push.items():
+                                        cr = requests.put(
+                                            f"{get_configs_url(target_int)}/{cfg_scope}",
+                                            json={"config": cfg_data},
                                             headers=get_configs_headers(),
                                             timeout=10,
                                         )
+                                        if cr.status_code == 404:
+                                            requests.post(
+                                                get_configs_url(target_int),
+                                                json={
+                                                    "scope": cfg_scope,
+                                                    "config": cfg_data,
+                                                },
+                                                headers=get_configs_headers(),
+                                                timeout=10,
+                                            )
                                 except Exception:
                                     pass
 
@@ -1651,82 +1651,42 @@ with t_dep:
                     except Exception as e:
                         st.error(str(e))
 
-with t_cfg:
-    st.markdown("### 🔧 Integration Configs")
-    st.caption(
-        "Configs are key-value pairs stored per integration, accessible in flows as `$.config.{key}`"
-    )
-
-    _cfg_ready = st.session_state.get("is_connected") and bool(
-        st.session_state.get("zis_oauth_token")
-    )
-    if not st.session_state.get("zis_oauth_token"):
+        st.divider()
+        st.markdown("### 🔧 Push Configs")
         st.caption(
-            "ℹ️ A **ZIS OAuth Token** is required to fetch or push configs — "
-            "add it in Settings. The standard API Token is not accepted here."
+            "Push locally stored configs to Zendesk. Requires a ZIS OAuth Token in Settings."
         )
-    elif not st.session_state.get("is_connected"):
-        st.caption("ℹ️ Click **Connect** in Settings to enable fetch and push.")
-
-    int_name_cfg = st.text_input(
-        "Integration Name",
-        value=st.session_state.get("current_integration_name", ""),
-        key="cfg_int_name",
-    )
-
-    col_fetch, col_push = st.columns(2)
-
-    with col_fetch:
-        if st.button("Fetch from Zendesk", key="btn_cfg_fetch"):
-            if not _cfg_ready:
+        _dep_cfg_int = st.text_input(
+            "Integration Name",
+            value=st.session_state.get("current_integration_name", ""),
+            key="dep_cfg_int",
+        )
+        if st.button("Push Configs to Zendesk", key="btn_dep_cfg_push"):
+            _dep_ready = st.session_state.get("is_connected") and bool(
+                st.session_state.get("zis_oauth_token")
+            )
+            if not _dep_ready:
                 st.warning("Connect and add a ZIS OAuth Token in Settings first.")
-            elif int_name_cfg:
-                try:
-                    r = requests.get(
-                        get_configs_url(int_name_cfg),
-                        params={"filter[scope]": "*"},
-                        headers=get_configs_headers(),
-                        timeout=10,
-                    )
-                    if r.status_code == 200:
-                        configs_list = r.json().get("configs", [])
-                        configs_by_scope = {}
-                        for c in configs_list:
-                            configs_by_scope[c.get("scope", "unknown")] = c.get(
-                                "config", {}
-                            )
-                        st.session_state["zis_configs"] = configs_by_scope
-                        st.session_state["current_integration_name"] = int_name_cfg
-                        st.session_state["cfg_editor_key"] += 1
-                        st.toast(f"Fetched {len(configs_list)} scope(s)", icon="✅")
-                        force_refresh()
-                    else:
-                        st.error(f"API Error: {r.status_code} - {r.text}")
-                except Exception as e:
-                    st.error(str(e))
-            else:
+            elif not _dep_cfg_int:
                 st.warning("Enter an integration name.")
-
-    with col_push:
-        if st.button("Push All to Zendesk", type="primary", key="btn_cfg_push"):
-            if not _cfg_ready:
-                st.warning("Connect and add a ZIS OAuth Token in Settings first.")
-            elif int_name_cfg:
-                configs = st.session_state.get("zis_configs", {})
-                if configs:
+            else:
+                _dep_configs = st.session_state.get("zis_configs", {})
+                if not _dep_configs:
+                    st.info("No configs to push. Load them in the Code Editor first.")
+                else:
                     try:
                         push_errors = []
                         push_ok = 0
-                        for scope, scope_cfg in configs.items():
+                        for scope, scope_cfg in _dep_configs.items():
                             r = requests.put(
-                                f"{get_configs_url(int_name_cfg)}/{scope}",
+                                f"{get_configs_url(_dep_cfg_int)}/{scope}",
                                 json={"config": scope_cfg},
                                 headers=get_configs_headers(),
                                 timeout=10,
                             )
                             if r.status_code == 404:
                                 r = requests.post(
-                                    get_configs_url(int_name_cfg),
+                                    get_configs_url(_dep_cfg_int),
                                     json={"scope": scope, "config": scope_cfg},
                                     headers=get_configs_headers(),
                                     timeout=10,
@@ -1740,108 +1700,10 @@ with t_cfg:
                         if push_errors:
                             st.error("\n\n".join(push_errors))
                         else:
-                            st.toast(f"Pushed {push_ok} scope(s)", icon="✅")
+                            st.toast(f"Pushed {push_ok} config scope(s)", icon="✅")
                     except Exception as e:
                         st.error(str(e))
-                else:
-                    st.info("No configs to push.")
-            else:
-                st.warning("Enter an integration name.")
 
-    # Auto-detect scopes from loaded flows
-    detected_scopes = detect_config_scopes()
-    if detected_scopes:
-        st.caption(
-            "Scopes detected in flows: " + "  ".join(f"`{s}`" for s in detected_scopes)
-        )
-
-    st.divider()
-
-    configs = st.session_state.get("zis_configs", {})
-    if configs:
-        st.markdown("**Stored Configs**")
-        for scope, scope_cfg in list(configs.items()):
-            with st.expander(f"scope: `{scope}`", expanded=True):
-                for cfg_key in list(scope_cfg.keys()):
-                    c1, c2, c3 = st.columns([2, 4, 1])
-                    with c1:
-                        st.text_input(
-                            "Key",
-                            value=cfg_key,
-                            disabled=True,
-                            key=f"cfg_k_{scope}_{cfg_key}",
-                            label_visibility="collapsed",
-                        )
-                    with c2:
-                        new_val = st.text_input(
-                            "Value",
-                            value=str(scope_cfg[cfg_key]),
-                            key=f"cfg_v_{scope}_{cfg_key}",
-                            label_visibility="collapsed",
-                        )
-                        if new_val != str(scope_cfg[cfg_key]):
-                            st.session_state["zis_configs"][scope][cfg_key] = new_val
-                    with c3:
-                        if st.button("🗑️", key=f"cfg_del_{scope}_{cfg_key}"):
-                            del st.session_state["zis_configs"][scope][cfg_key]
-                            force_refresh()
-    else:
-        st.info("No configs loaded. Fetch from Zendesk or add one below.")
-
-    st.markdown("**➕ Add Config Entry**")
-    _add_scopes = detect_config_scopes()
-    nc0, nc1, nc2, nc3 = st.columns([2, 2, 3, 1])
-    with nc0:
-        if _add_scopes:
-            _sel_scope = st.selectbox(
-                "Scope",
-                _add_scopes + ["other..."],
-                key="new_cfg_scope_sel",
-                label_visibility="collapsed",
-            )
-            if _sel_scope == "other...":
-                new_cfg_scope = st.text_input(
-                    "Custom scope",
-                    key="new_cfg_scope",
-                    label_visibility="collapsed",
-                    placeholder="custom scope",
-                )
-            else:
-                new_cfg_scope = _sel_scope
-        else:
-            new_cfg_scope = st.text_input(
-                "Scope",
-                key="new_cfg_scope",
-                label_visibility="collapsed",
-                placeholder="scope",
-            )
-    with nc1:
-        new_cfg_key = st.text_input(
-            "Key",
-            key="new_cfg_key",
-            label_visibility="collapsed",
-            placeholder="key",
-        )
-    with nc2:
-        new_cfg_val = st.text_input(
-            "Value",
-            key="new_cfg_val",
-            label_visibility="collapsed",
-            placeholder="value",
-        )
-    with nc3:
-        if st.button("Add", key="btn_add_cfg"):
-            if new_cfg_scope and new_cfg_key:
-                if new_cfg_scope not in st.session_state["zis_configs"]:
-                    st.session_state["zis_configs"][new_cfg_scope] = {}
-                st.session_state["zis_configs"][new_cfg_scope][
-                    new_cfg_key
-                ] = new_cfg_val
-                force_refresh()
-            elif not new_cfg_scope:
-                st.error("Scope is required.")
-            else:
-                st.error("Key is required.")
 
 with t_deb:
     render_resource_manager("deb_tab", "res_selection_deb", allowed_types=["ZIS::Flow"])
