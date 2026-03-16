@@ -1116,15 +1116,18 @@ with t_code:
 
         # Fetch row
         detected_scopes = detect_config_scopes()
+        _cfg_int = st.session_state.get("current_integration_name", "")
         fc1, fc2 = st.columns([3, 1])
         with fc1:
-            _cfg_int = st.text_input(
-                "Integration name",
-                value=st.session_state.get("current_integration_name", ""),
-                key="cfg_editor_int_name",
-                label_visibility="collapsed",
-                placeholder="Integration name (e.g. my_integration)",
-            )
+            if _cfg_int:
+                st.caption(f"Integration: `{_cfg_int}`")
+            else:
+                _cfg_int = st.text_input(
+                    "Integration name",
+                    key="cfg_editor_int_name",
+                    label_visibility="collapsed",
+                    placeholder="Integration name (e.g. my_integration)",
+                )
             if detected_scopes:
                 st.caption(
                     "Scopes detected in flows: "
