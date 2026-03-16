@@ -911,6 +911,11 @@ with t_code:
             "Editing Integration Configs as JSON — save locally here, then push to Zendesk from the Configs tab."
         )
 
+        # Bump editor key when switching to this mode so editor re-initializes with current content
+        if st.session_state.get("_prev_code_edit_mode") != "Integration Configs":
+            st.session_state["cfg_editor_key"] += 1
+        st.session_state["_prev_code_edit_mode"] = "Integration Configs"
+
         # Load configs JSON into editor when switching to this mode
         configs_content = json.dumps(st.session_state.get("zis_configs", {}), indent=2)
         cfg_editor_key = f"cfg_editor_{st.session_state['cfg_editor_key']}"
@@ -945,6 +950,7 @@ with t_code:
                     st.error(f"❌ JSON Error at line {e.lineno}: {e.msg}")
 
     else:
+        st.session_state["_prev_code_edit_mode"] = "Bundle Resource"
         render_resource_manager("code_tab", "res_selection_code")
         st.divider()
 
