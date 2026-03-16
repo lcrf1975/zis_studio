@@ -1836,19 +1836,32 @@ with t_cfg:
             st.info("No configs loaded. Fetch from Zendesk or add one below.")
 
         with st.expander("➕ Add Config Entry"):
-            if detected_scopes:
-                st.caption(
-                    "Detected scopes: "
-                    + "  ".join(f"`{s}`" for s in detected_scopes)
-                )
             nc0, nc1, nc2, nc3 = st.columns([2, 2, 3, 1])
             with nc0:
-                new_cfg_scope = st.text_input(
-                    "Scope",
-                    key="new_cfg_scope",
-                    label_visibility="collapsed",
-                    placeholder="scope",
-                )
+                scope_options = detected_scopes + ["other..."]
+                if detected_scopes:
+                    selected_scope = st.selectbox(
+                        "Scope",
+                        scope_options,
+                        key="new_cfg_scope_sel",
+                        label_visibility="collapsed",
+                    )
+                    if selected_scope == "other...":
+                        new_cfg_scope = st.text_input(
+                            "Custom scope",
+                            key="new_cfg_scope",
+                            label_visibility="collapsed",
+                            placeholder="custom scope",
+                        )
+                    else:
+                        new_cfg_scope = selected_scope
+                else:
+                    new_cfg_scope = st.text_input(
+                        "Scope",
+                        key="new_cfg_scope",
+                        label_visibility="collapsed",
+                        placeholder="scope",
+                    )
             with nc1:
                 new_cfg_key = st.text_input(
                     "Key",
