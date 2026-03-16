@@ -351,6 +351,11 @@ def get_base_url():
     return f"https://{sub}.zendesk.com/api/services/zis/registry" if sub else ""
 
 
+def get_configs_url(integration):
+    sub = st.session_state.zd_subdomain
+    return f"https://{sub}.zendesk.com/api/services/zis/integrations/{integration}/configs" if sub else ""
+
+
 def test_connection():
     try:
         r = requests.get(
@@ -872,12 +877,15 @@ with t_imp:
                                 # Fetch configs for this integration
                                 try:
                                     cfg_resp = requests.get(
-                                        f"{get_base_url()}/{it['int']}/configs",
+                                        get_configs_url(it['int']),
+                                        params={"filter[scope]": "*"},
                                         auth=get_auth(), timeout=10)
                                     if cfg_resp.status_code == 200:
                                         configs_list = cfg_resp.json().get("configs", [])
-                                        st.session_state["zis_configs"] = {
-                                            c["key"]: c["value"] for c in configs_list}
+                                        merged = {}
+                                        for c in configs_list:
+                                            merged.update(c.get("config", {}))
+                                        st.session_state["zis_configs"] = merged
                                         st.session_state["cfg_editor_key"] += 1
                                         if configs_list:
                                             st.toast(f"Loaded {len(configs_list)} config(s)", icon="🔧")
@@ -1342,23 +1350,22 @@ with t_dep:
                             configs_to_push = st.session_state.get("zis_configs", {})
                             if configs_to_push:
                                 status.write(f"Pushing {len(configs_to_push)} config(s)...")
-                                for cfg_key, cfg_val in configs_to_push.items():
-                                    try:
-                                        cr = requests.put(
-                                            f"{get_base_url()}/{target_int}/configs/{cfg_key}",
+                                try:
+                                    cr = requests.put(
+                                        f"{get_configs_url(target_int)}/account",
+                                        auth=get_auth(),
+                                        json={"config": configs_to_push},
+                                        headers={"Content-Type": "application/json"},
+                                        timeout=10)
+                                    if cr.status_code == 404:
+                                        requests.post(
+                                            get_configs_url(target_int),
                                             auth=get_auth(),
-                                            json={"config": {"value": cfg_val}},
+                                            json={"scope": "account", "config": configs_to_push},
                                             headers={"Content-Type": "application/json"},
                                             timeout=10)
-                                        if cr.status_code == 404:
-                                            requests.post(
-                                                f"{get_base_url()}/{target_int}/configs",
-                                                auth=get_auth(),
-                                                json={"config": {"key": cfg_key, "value": cfg_val}},
-                                                headers={"Content-Type": "application/json"},
-                                                timeout=10)
-                                    except Exception:
-                                        pass
+                                except Exception:
+                                    pass
 
                             st.balloons()
                             status.update(label="Deployed!", state="complete")
@@ -1389,12 +1396,15 @@ with t_cfg:
                 if int_name_cfg:
                     try:
                         r = requests.get(
-                            f"{get_base_url()}/{int_name_cfg}/configs",
+                            get_configs_url(int_name_cfg),
+                            params={"filter[scope]": "*"},
                             auth=get_auth(), timeout=10)
                         if r.status_code == 200:
                             configs_list = r.json().get("configs", [])
-                            st.session_state["zis_configs"] = {
-                                c["key"]: c["value"] for c in configs_list}
+                            merged = {}
+                            for c in configs_list:
+                                merged.update(c.get("config", {}))
+                            st.session_state["zis_configs"] = merged
                             st.session_state["current_integration_name"] = int_name_cfg
                             st.session_state["cfg_editor_key"] += 1
                             st.toast(f"Fetched {len(configs_list)} config(s)", icon="✅")
@@ -1411,31 +1421,27 @@ with t_cfg:
                 if int_name_cfg:
                     configs = st.session_state.get("zis_configs", {})
                     if configs:
-                        errors = []
-                        for cfg_key, cfg_val in configs.items():
-                            try:
-                                # Try PUT (update), fall back to POST (create) on 404
-                                r = requests.put(
-                                    f"{get_base_url()}/{int_name_cfg}/configs/{cfg_key}",
+                        try:
+                            # Try PUT (update), fall back to POST (create) on 404
+                            r = requests.put(
+                                f"{get_configs_url(int_name_cfg)}/account",
+                                auth=get_auth(),
+                                json={"config": configs},
+                                headers={"Content-Type": "application/json"},
+                                timeout=10)
+                            if r.status_code == 404:
+                                r = requests.post(
+                                    get_configs_url(int_name_cfg),
                                     auth=get_auth(),
-                                    json={"config": {"value": cfg_val}},
+                                    json={"scope": "account", "config": configs},
                                     headers={"Content-Type": "application/json"},
                                     timeout=10)
-                                if r.status_code == 404:
-                                    r = requests.post(
-                                        f"{get_base_url()}/{int_name_cfg}/configs",
-                                        auth=get_auth(),
-                                        json={"config": {"key": cfg_key, "value": cfg_val}},
-                                        headers={"Content-Type": "application/json"},
-                                        timeout=10)
-                                if r.status_code not in [200, 201]:
-                                    errors.append(f"{cfg_key}: {r.status_code}")
-                            except Exception as e:
-                                errors.append(f"{cfg_key}: {str(e)}")
-                        if errors:
-                            st.error(f"Failed to push: {', '.join(errors)}")
-                        else:
-                            st.toast(f"Pushed {len(configs)} config(s)", icon="✅")
+                            if r.status_code in [200, 201]:
+                                st.toast(f"Pushed {len(configs)} config(s)", icon="✅")
+                            else:
+                                st.error(f"Failed to push: {r.status_code} - {r.text}")
+                        except Exception as e:
+                            st.error(str(e))
                     else:
                         st.info("No configs to push.")
                 else:
@@ -1458,13 +1464,6 @@ with t_cfg:
                         st.session_state["zis_configs"][cfg_key] = new_val
                 with c3:
                     if st.button("🗑️", key=f"cfg_del_{cfg_key}"):
-                        if int_name_cfg:
-                            try:
-                                requests.delete(
-                                    f"{get_base_url()}/{int_name_cfg}/configs/{cfg_key}",
-                                    auth=get_auth(), timeout=10)
-                            except Exception:
-                                pass
                         del st.session_state["zis_configs"][cfg_key]
                         force_refresh()
         else:
