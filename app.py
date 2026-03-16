@@ -327,6 +327,11 @@ for key in ["zd_subdomain", "zd_email", "zd_token"]:
     if key not in st.session_state:
         st.session_state[key] = ""
 
+if "zis_configs" not in st.session_state:
+    st.session_state["zis_configs"] = {}
+if "current_integration_name" not in st.session_state:
+    st.session_state["current_integration_name"] = ""
+
 
 # ==========================================
 # 3. HELPERS & STATIC SVG RENDERER
@@ -712,8 +717,8 @@ def render_resource_manager(
 # ==========================================
 st.title("ZIS Studio")
 
-t_set, t_imp, t_code, t_vis, t_dep, t_deb = st.tabs(
-    ["⚙️ Settings", "📥 Import", "📝 Code Editor", "🎨 Visual Designer", "🚀 Deploy", "🐞 Debugger"])
+t_set, t_imp, t_code, t_vis, t_dep, t_cfg, t_deb = st.tabs(
+    ["⚙️ Settings", "📥 Import", "📝 Code Editor", "🎨 Visual Designer", "🚀 Deploy", "🔧 Configs", "🐞 Debugger"])
 
 with t_set:
     st.markdown("### 🔑 Zendesk Credentials")
@@ -858,6 +863,22 @@ with t_imp:
                                 st.session_state["editor_key"] += 1
 
                                 st.session_state["current_bundle_name"] = it['bun']
+                                st.session_state["current_integration_name"] = it['int']
+
+                                # Fetch configs for this integration
+                                try:
+                                    cfg_resp = requests.get(
+                                        f"{get_base_url()}/{it['int']}/configs",
+                                        auth=get_auth(), timeout=10)
+                                    if cfg_resp.status_code == 200:
+                                        configs_list = cfg_resp.json().get("configs", [])
+                                        st.session_state["zis_configs"] = {
+                                            c["key"]: c["value"] for c in configs_list}
+                                        if configs_list:
+                                            st.toast(f"Loaded {len(configs_list)} config(s)", icon="🔧")
+                                except Exception:
+                                    pass  # configs are optional
+
                                 st.toast("Bundle Loaded!", icon="🎉")
                                 time.sleep(0.5)
                                 force_refresh()
@@ -1261,6 +1282,28 @@ with t_dep:
                             timeout=15)
 
                         if r.status_code in [200, 201]:
+                            # Push configs if any are stored
+                            configs_to_push = st.session_state.get("zis_configs", {})
+                            if configs_to_push:
+                                status.write(f"Pushing {len(configs_to_push)} config(s)...")
+                                for cfg_key, cfg_val in configs_to_push.items():
+                                    try:
+                                        cr = requests.put(
+                                            f"{get_base_url()}/{target_int}/configs/{cfg_key}",
+                                            auth=get_auth(),
+                                            json={"config": {"value": cfg_val}},
+                                            headers={"Content-Type": "application/json"},
+                                            timeout=10)
+                                        if cr.status_code == 404:
+                                            requests.post(
+                                                f"{get_base_url()}/{target_int}/configs",
+                                                auth=get_auth(),
+                                                json={"config": {"key": cfg_key, "value": cfg_val}},
+                                                headers={"Content-Type": "application/json"},
+                                                timeout=10)
+                                    except Exception:
+                                        pass
+
                             st.balloons()
                             status.update(label="Deployed!", state="complete")
                             st.success(f"Deployed {safe_bun} to {target_int}")
@@ -1270,6 +1313,123 @@ with t_dep:
                             st.error(r.text)
                     except Exception as e:
                         st.error(str(e))
+
+with t_cfg:
+    st.markdown("### 🔧 Integration Configs")
+    st.caption("Configs are key-value pairs stored per integration, accessible in flows as `$.config.{key}`")
+
+    if not st.session_state.get("is_connected"):
+        st.warning("Connect in Settings first.")
+    else:
+        int_name_cfg = st.text_input(
+            "Integration Name",
+            value=st.session_state.get("current_integration_name", ""),
+            key="cfg_int_name")
+
+        col_fetch, col_push = st.columns(2)
+
+        with col_fetch:
+            if st.button("Fetch from Zendesk", key="btn_cfg_fetch"):
+                if int_name_cfg:
+                    try:
+                        r = requests.get(
+                            f"{get_base_url()}/{int_name_cfg}/configs",
+                            auth=get_auth(), timeout=10)
+                        if r.status_code == 200:
+                            configs_list = r.json().get("configs", [])
+                            st.session_state["zis_configs"] = {
+                                c["key"]: c["value"] for c in configs_list}
+                            st.session_state["current_integration_name"] = int_name_cfg
+                            st.toast(f"Fetched {len(configs_list)} config(s)", icon="✅")
+                            force_refresh()
+                        else:
+                            st.error(f"API Error: {r.status_code} - {r.text}")
+                    except Exception as e:
+                        st.error(str(e))
+                else:
+                    st.warning("Enter an integration name.")
+
+        with col_push:
+            if st.button("Push All to Zendesk", type="primary", key="btn_cfg_push"):
+                if int_name_cfg:
+                    configs = st.session_state.get("zis_configs", {})
+                    if configs:
+                        errors = []
+                        for cfg_key, cfg_val in configs.items():
+                            try:
+                                # Try PUT (update), fall back to POST (create) on 404
+                                r = requests.put(
+                                    f"{get_base_url()}/{int_name_cfg}/configs/{cfg_key}",
+                                    auth=get_auth(),
+                                    json={"config": {"value": cfg_val}},
+                                    headers={"Content-Type": "application/json"},
+                                    timeout=10)
+                                if r.status_code == 404:
+                                    r = requests.post(
+                                        f"{get_base_url()}/{int_name_cfg}/configs",
+                                        auth=get_auth(),
+                                        json={"config": {"key": cfg_key, "value": cfg_val}},
+                                        headers={"Content-Type": "application/json"},
+                                        timeout=10)
+                                if r.status_code not in [200, 201]:
+                                    errors.append(f"{cfg_key}: {r.status_code}")
+                            except Exception as e:
+                                errors.append(f"{cfg_key}: {str(e)}")
+                        if errors:
+                            st.error(f"Failed to push: {', '.join(errors)}")
+                        else:
+                            st.toast(f"Pushed {len(configs)} config(s)", icon="✅")
+                    else:
+                        st.info("No configs to push.")
+                else:
+                    st.warning("Enter an integration name.")
+
+        st.divider()
+
+        configs = st.session_state.get("zis_configs", {})
+        if configs:
+            st.markdown("**Stored Configs**")
+            for cfg_key in list(configs.keys()):
+                c1, c2, c3 = st.columns([2, 4, 1])
+                with c1:
+                    st.text_input("Key", value=cfg_key, disabled=True,
+                                  key=f"cfg_k_{cfg_key}", label_visibility="collapsed")
+                with c2:
+                    new_val = st.text_input("Value", value=str(configs[cfg_key]),
+                                            key=f"cfg_v_{cfg_key}", label_visibility="collapsed")
+                    if new_val != str(configs[cfg_key]):
+                        st.session_state["zis_configs"][cfg_key] = new_val
+                with c3:
+                    if st.button("🗑️", key=f"cfg_del_{cfg_key}"):
+                        if int_name_cfg:
+                            try:
+                                requests.delete(
+                                    f"{get_base_url()}/{int_name_cfg}/configs/{cfg_key}",
+                                    auth=get_auth(), timeout=10)
+                            except Exception:
+                                pass
+                        del st.session_state["zis_configs"][cfg_key]
+                        force_refresh()
+        else:
+            st.info("No configs loaded. Fetch from Zendesk or add one below.")
+
+        with st.expander("➕ Add Config"):
+            nc1, nc2, nc3 = st.columns([2, 4, 1])
+            with nc1:
+                new_cfg_key = st.text_input("Key", key="new_cfg_key", label_visibility="collapsed",
+                                            placeholder="key")
+            with nc2:
+                new_cfg_val = st.text_input("Value", key="new_cfg_val", label_visibility="collapsed",
+                                            placeholder="value")
+            with nc3:
+                if st.button("Add", key="btn_add_cfg"):
+                    if new_cfg_key and new_cfg_key not in st.session_state["zis_configs"]:
+                        st.session_state["zis_configs"][new_cfg_key] = new_cfg_val
+                        force_refresh()
+                    elif not new_cfg_key:
+                        st.error("Key is required.")
+                    else:
+                        st.error("Key already exists.")
 
 with t_deb:
     render_resource_manager(
@@ -1308,7 +1468,8 @@ with t_deb:
                     try:
                         input_json = json.loads(inp)
                         eng = ZISFlowEngine(
-                            normalize_zis_keys(current_def), input_json, {}, {})
+                            normalize_zis_keys(current_def), input_json, {},
+                            st.session_state.get("zis_configs", {}))
                         logs, ctx, path = eng.run()
                         st.session_state["debug_res"] = (logs, ctx, path)
                     except json.JSONDecodeError:

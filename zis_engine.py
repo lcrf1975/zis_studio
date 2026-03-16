@@ -139,7 +139,7 @@ class ZISFlowEngine:
                 elif isinstance(headers, dict):
                     req_headers = headers
 
-                response = requests.request(method, url, json=payload, headers=req_headers)
+                response = requests.request(method, url, json=payload, headers=req_headers, timeout=10)
                 status_msg = f"API Hit: {url} [{response.status_code}]"
 
                 try:
@@ -317,8 +317,7 @@ class ZISFlowEngine:
 
             elif state_type == "Wait":
                 seconds = state.get("Seconds", 1)
-                self.log(current_state_name, f"Waiting {seconds}s...", "SLEEP")
-                time.sleep(float(seconds))
+                self.log(current_state_name, f"Wait skipped in simulation (would wait {seconds}s)", "INFO")
                 current_state_name = state.get("Next")
 
             elif state_type == "Succeed":
