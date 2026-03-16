@@ -1118,55 +1118,11 @@ with t_code:
         # Auto-detect scopes from loaded flows
         detected_scopes = detect_config_scopes()
         if detected_scopes:
-            st.caption(f"Scopes detected in flows: `{'`, `'.join(detected_scopes)}`")
-
-        if not st.session_state.get("zis_oauth_token"):
             st.caption(
-                "ℹ️ To fetch or push configs, add a **ZIS OAuth Token** in Settings "
-                "(the API Token is not accepted by the Configs endpoint)."
+                "Scopes detected in flows: "
+                + "  ".join(f"`{s}`" for s in detected_scopes)
             )
-
-        # Fetch shortcut
-        int_name_for_fetch = st.session_state.get("current_integration_name", "")
-        fc1, fc2 = st.columns([3, 1])
-        with fc1:
-            int_name_for_fetch = st.text_input(
-                "Integration name",
-                value=int_name_for_fetch,
-                key="cfg_editor_int_name",
-                label_visibility="collapsed",
-                placeholder="Integration name (e.g. my_integration)",
-            )
-        with fc2:
-            if st.button("Fetch Configs", key="btn_cfg_fetch_editor"):
-                if int_name_for_fetch:
-                    try:
-                        r = requests.get(
-                            get_configs_url(int_name_for_fetch),
-                            params={"filter[scope]": "*"},
-                            headers=get_configs_headers(),
-                            timeout=10,
-                        )
-                        if r.status_code == 200:
-                            configs_list = r.json().get("configs", [])
-                            configs_by_scope = {}
-                            for c in configs_list:
-                                configs_by_scope[c.get("scope", "unknown")] = c.get(
-                                    "config", {}
-                                )
-                            st.session_state["zis_configs"] = configs_by_scope
-                            st.session_state["current_integration_name"] = (
-                                int_name_for_fetch
-                            )
-                            st.session_state["cfg_editor_key"] += 1
-                            st.toast(f"Fetched {len(configs_list)} scope(s)", icon="✅")
-                            st.rerun()
-                        else:
-                            st.error(f"API Error {r.status_code}: {r.text}")
-                    except Exception as e:
-                        st.error(str(e))
-                else:
-                    st.warning("Enter an integration name.")
+        st.caption("Use the **Configs tab** to fetch, add, and push configs to Zendesk.")
 
         # Load configs JSON into editor when switching to this mode
         configs_content = json.dumps(st.session_state.get("zis_configs", {}), indent=2)
