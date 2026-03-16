@@ -1721,10 +1721,10 @@ with t_cfg:
     col_fetch, col_push = st.columns(2)
 
     with col_fetch:
-        if st.button(
-            "Fetch from Zendesk", key="btn_cfg_fetch", disabled=not _cfg_ready
-        ):
-            if int_name_cfg:
+        if st.button("Fetch from Zendesk", key="btn_cfg_fetch"):
+            if not _cfg_ready:
+                st.warning("Connect and add a ZIS OAuth Token in Settings first.")
+            elif int_name_cfg:
                 try:
                     r = requests.get(
                         get_configs_url(int_name_cfg),
@@ -1752,13 +1752,10 @@ with t_cfg:
                 st.warning("Enter an integration name.")
 
     with col_push:
-        if st.button(
-            "Push All to Zendesk",
-            type="primary",
-            key="btn_cfg_push",
-            disabled=not _cfg_ready,
-        ):
-            if int_name_cfg:
+        if st.button("Push All to Zendesk", type="primary", key="btn_cfg_push"):
+            if not _cfg_ready:
+                st.warning("Connect and add a ZIS OAuth Token in Settings first.")
+            elif int_name_cfg:
                 configs = st.session_state.get("zis_configs", {})
                 if configs:
                     try:
@@ -1835,60 +1832,60 @@ with t_cfg:
     else:
         st.info("No configs loaded. Fetch from Zendesk or add one below.")
 
-    with st.expander("➕ Add Config Entry"):
-        _add_scopes = detect_config_scopes()
-        nc0, nc1, nc2, nc3 = st.columns([2, 2, 3, 1])
-        with nc0:
-            if _add_scopes:
-                _sel_scope = st.selectbox(
-                    "Scope",
-                    _add_scopes + ["other..."],
-                    key="new_cfg_scope_sel",
-                    label_visibility="collapsed",
-                )
-                if _sel_scope == "other...":
-                    new_cfg_scope = st.text_input(
-                        "Custom scope",
-                        key="new_cfg_scope",
-                        label_visibility="collapsed",
-                        placeholder="custom scope",
-                    )
-                else:
-                    new_cfg_scope = _sel_scope
-            else:
+    st.markdown("**➕ Add Config Entry**")
+    _add_scopes = detect_config_scopes()
+    nc0, nc1, nc2, nc3 = st.columns([2, 2, 3, 1])
+    with nc0:
+        if _add_scopes:
+            _sel_scope = st.selectbox(
+                "Scope",
+                _add_scopes + ["other..."],
+                key="new_cfg_scope_sel",
+                label_visibility="collapsed",
+            )
+            if _sel_scope == "other...":
                 new_cfg_scope = st.text_input(
-                    "Scope",
+                    "Custom scope",
                     key="new_cfg_scope",
                     label_visibility="collapsed",
-                    placeholder="scope",
+                    placeholder="custom scope",
                 )
-        with nc1:
-            new_cfg_key = st.text_input(
-                "Key",
-                key="new_cfg_key",
+            else:
+                new_cfg_scope = _sel_scope
+        else:
+            new_cfg_scope = st.text_input(
+                "Scope",
+                key="new_cfg_scope",
                 label_visibility="collapsed",
-                placeholder="key",
+                placeholder="scope",
             )
-        with nc2:
-            new_cfg_val = st.text_input(
-                "Value",
-                key="new_cfg_val",
-                label_visibility="collapsed",
-                placeholder="value",
-            )
-        with nc3:
-            if st.button("Add", key="btn_add_cfg"):
-                if new_cfg_scope and new_cfg_key:
-                    if new_cfg_scope not in st.session_state["zis_configs"]:
-                        st.session_state["zis_configs"][new_cfg_scope] = {}
-                    st.session_state["zis_configs"][new_cfg_scope][
-                        new_cfg_key
-                    ] = new_cfg_val
-                    force_refresh()
-                elif not new_cfg_scope:
-                    st.error("Scope is required.")
-                else:
-                    st.error("Key is required.")
+    with nc1:
+        new_cfg_key = st.text_input(
+            "Key",
+            key="new_cfg_key",
+            label_visibility="collapsed",
+            placeholder="key",
+        )
+    with nc2:
+        new_cfg_val = st.text_input(
+            "Value",
+            key="new_cfg_val",
+            label_visibility="collapsed",
+            placeholder="value",
+        )
+    with nc3:
+        if st.button("Add", key="btn_add_cfg"):
+            if new_cfg_scope and new_cfg_key:
+                if new_cfg_scope not in st.session_state["zis_configs"]:
+                    st.session_state["zis_configs"][new_cfg_scope] = {}
+                st.session_state["zis_configs"][new_cfg_scope][
+                    new_cfg_key
+                ] = new_cfg_val
+                force_refresh()
+            elif not new_cfg_scope:
+                st.error("Scope is required.")
+            else:
+                st.error("Key is required.")
 
 with t_deb:
     render_resource_manager("deb_tab", "res_selection_deb", allowed_types=["ZIS::Flow"])
