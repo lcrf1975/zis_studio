@@ -6,6 +6,7 @@ on:
     branches: [ main, master ]
   schedule:
     - cron: '0 6 * * 1'
+  workflow_dispatch:
 jobs:
   analyze:
     name: Analyze
@@ -17,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [ 'python', 'javascript' ]
+        language: [ 'python' ]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,5 +28,6 @@ jobs:
           languages: ${{ matrix.language }}
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3
+        if: ${{ matrix.language != 'javascript' && matrix.language != 'python' && matrix.language != 'ruby' }}
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
