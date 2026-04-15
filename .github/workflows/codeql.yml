@@ -10,7 +10,7 @@ on:
 jobs:
   analyze:
     name: Analyze
-    runs-on: ${{ matrix.language == 'swift' && 'macos-latest' || 'ubuntu-latest' }}
+    runs-on: ${{ matrix.language == 'swift' && 'macos-latest' || matrix.language == 'csharp' && 'windows-latest' || 'ubuntu-latest' }}
     permissions:
       security-events: write
       actions: read
@@ -28,9 +28,17 @@ jobs:
           languages: ${{ matrix.language }}
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3
-        if: ${{ matrix.language != 'javascript' && matrix.language != 'python' && matrix.language != 'ruby' && matrix.language != 'csharp' }}
+        if: ${{ matrix.language != 'javascript' && matrix.language != 'python' && matrix.language != 'ruby' && matrix.language != 'csharp' && matrix.language != 'swift' }}
+      - name: Setup MSBuild
+        if: ${{ matrix.language == 'csharp' }}
+        uses: microsoft/setup-msbuild@v2
       - name: Build C#
         if: ${{ matrix.language == 'csharp' }}
-        run: dotnet build --no-incremental
+        run: msbuild /t:rebuild
+      - name: Build Swift
+        if: ${{ matrix.language == 'swift' }}
+        run: |
+          scheme=$(xcodebuild -list -json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print((d.get('project') or d.get('workspace',{})).get('schemes',[''])[0])" 2>/dev/null)
+          xcodebuild build -scheme "${scheme}" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
