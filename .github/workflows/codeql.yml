@@ -10,7 +10,7 @@ on:
 jobs:
   analyze:
     name: Analyze
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.language == 'swift' && 'macos-latest' || 'ubuntu-latest' }}
     permissions:
       security-events: write
       actions: read
@@ -28,6 +28,9 @@ jobs:
           languages: ${{ matrix.language }}
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3
-        if: ${{ matrix.language != 'javascript' && matrix.language != 'python' && matrix.language != 'ruby' }}
+        if: ${{ matrix.language != 'javascript' && matrix.language != 'python' && matrix.language != 'ruby' && matrix.language != 'csharp' }}
+      - name: Build C#
+        if: ${{ matrix.language == 'csharp' }}
+        run: dotnet build --no-incremental
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
