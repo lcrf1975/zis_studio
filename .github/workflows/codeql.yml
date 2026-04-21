@@ -28,13 +28,33 @@ jobs:
           languages: ${{ matrix.language }}
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3
-        if: ${{ matrix.language != 'javascript' && matrix.language != 'python' && matrix.language != 'ruby' && matrix.language != 'csharp' && matrix.language != 'swift' }}
+        if: ${{ matrix.language != 'javascript' && matrix.language != 'python' && matrix.language != 'ruby' && matrix.language != 'csharp' && matrix.language != 'swift' && matrix.language != 'kotlin' && matrix.language != 'cpp' }}
       - name: Setup MSBuild
         if: ${{ matrix.language == 'csharp' }}
         uses: microsoft/setup-msbuild@v2
       - name: Build C#
         if: ${{ matrix.language == 'csharp' }}
         run: msbuild /t:rebuild
+      - name: Build Kotlin
+        if: ${{ matrix.language == 'kotlin' }}
+        run: |
+          if [ -f gradlew ]; then
+            ./gradlew build --no-daemon
+          elif [ -f build.gradle ] || [ -f build.gradle.kts ]; then
+            gradle build --no-daemon
+          else
+            echo "No Gradle wrapper found — manual build configuration required" && exit 1
+          fi
+      - name: Build C/C++
+        if: ${{ matrix.language == 'cpp' }}
+        run: |
+          if [ -f CMakeLists.txt ]; then
+            cmake -B build && cmake --build build
+          elif [ -f Makefile ]; then
+            make
+          else
+            echo "No CMakeLists.txt or Makefile found — manual build configuration required" && exit 1
+          fi
       - name: Build Swift
         if: ${{ matrix.language == 'swift' }}
         run: |
