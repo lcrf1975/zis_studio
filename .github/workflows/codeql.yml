@@ -9,8 +9,8 @@ on:
   workflow_dispatch:
 jobs:
   analyze:
-    name: Analyze
-    runs-on: ${{ matrix.language == 'swift' && 'macos-latest' || matrix.language == 'csharp' && 'windows-latest' || 'ubuntu-latest' }}
+    name: Analyze (${{ matrix.language }})
+    runs-on: ${{ matrix.runner }}
     permissions:
       security-events: write
       actions: read
@@ -18,7 +18,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [ 'python' ]
+        include:
+          - language: python
+            build-mode: none
+            runner: ubuntu-latest
+          - language: actions
+            build-mode: none
+            runner: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,27 +32,27 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
-        if: ${{ matrix.language != 'javascript' && matrix.language != 'python' && matrix.language != 'ruby' && matrix.language != 'csharp' && matrix.language != 'swift' && matrix.language != 'kotlin' && matrix.language != 'cpp' }}
+          build-mode: ${{ matrix.build-mode }}
       - name: Setup MSBuild
-        if: ${{ matrix.language == 'csharp' }}
+        if: matrix.language == 'csharp' && matrix.build-mode == 'manual'
         uses: microsoft/setup-msbuild@v2
-      - name: Build C#
-        if: ${{ matrix.language == 'csharp' }}
+      - name: Manual build (C#)
+        if: matrix.language == 'csharp' && matrix.build-mode == 'manual'
         run: msbuild /t:rebuild
-      - name: Build Kotlin
-        if: ${{ matrix.language == 'kotlin' }}
+      - name: Manual build (Java/Kotlin)
+        if: matrix.language == 'java-kotlin' && matrix.build-mode == 'manual'
         run: |
           if [ -f gradlew ]; then
             ./gradlew build --no-daemon
           elif [ -f build.gradle ] || [ -f build.gradle.kts ]; then
             gradle build --no-daemon
+          elif [ -f pom.xml ]; then
+            mvn -B package -DskipTests
           else
-            echo "No Gradle wrapper found — manual build configuration required" && exit 1
+            echo "No Gradle/Maven build file found — manual build configuration required" && exit 1
           fi
-      - name: Build C/C++
-        if: ${{ matrix.language == 'cpp' }}
+      - name: Manual build (C/C++)
+        if: matrix.language == 'c-cpp' && matrix.build-mode == 'manual'
         run: |
           if [ -f CMakeLists.txt ]; then
             cmake -B build && cmake --build build
@@ -55,10 +61,12 @@ jobs:
           else
             echo "No CMakeLists.txt or Makefile found — manual build configuration required" && exit 1
           fi
-      - name: Build Swift
-        if: ${{ matrix.language == 'swift' }}
+      - name: Manual build (Swift)
+        if: matrix.language == 'swift' && matrix.build-mode == 'manual'
         run: |
           scheme=$(xcodebuild -list -json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print((d.get('project') or d.get('workspace',{})).get('schemes',[''])[0])" 2>/dev/null)
           xcodebuild build -scheme "${scheme}" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
